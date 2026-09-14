@@ -10,134 +10,197 @@ CURRENT_LINK="${RUNTIME_ROOT}/current"
 VERSION_FILE="${RUNTIME_ROOT}/current-version"
 PROXY_DIR="${TRIM_APPDEST}/proxy"
 PROXY_NODE="${TRIM_APPDEST}/server/node/bin/node"
+PUBLIC_PORT="${TRIM_SERVICE_PORT:-8080}"
+BACKEND_PORT="18080"
+LOCK_DIR="${TRIM_PKGTMP:-${TRIM_PKGVAR}}/lifecycle.lock"
+
+write_error() {
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && printf '%s\n' "$1" > "$TRIM_TEMP_LOGFILE"
+  printf '%s\n' "$1" >&2
+}
+
+read_pid() {
+  [ -f "$1" ] || return 1
+  tr -cd '0-9' < "$1"
+}
+
+process_matches() {
+  pid="$1"
+  marker="$2"
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ -r "/proc/${pid}/cmdline" ] || return 1
+  tr '\0' ' ' < "/proc/${pid}/cmdline" | grep -Fq -- "$marker"
+}
 
 pid_running() {
   file="$1"
-  [ -f "$file" ] || return 1
-  pid="$(head -n 1 "$file" | tr -d '[:space:]')"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  marker="$2"
+  pid="$(read_pid "$file" 2>/dev/null || true)"
+  [ -n "$pid" ] && process_matches "$pid" "$marker"
+}
+
+find_our_pids() {
+  marker="$1"
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [ -r "$cmdline" ] || continue
+    if tr '\0' ' ' < "$cmdline" 2>/dev/null | grep -Fq -- "$marker"; then
+      basename "$(dirname "$cmdline")"
+    fi
+  done
+}
+
+stop_matching() {
+  marker="$1"
+  pids="$(find_our_pids "$marker")"
+  [ -n "$pids" ] || return 0
+  kill -TERM $pids 2>/dev/null || true
+  count=0
+  while [ "$count" -lt 30 ]; do
+    alive=""
+    for pid in $pids; do
+      process_matches "$pid" "$marker" && alive="$alive $pid"
+    done
+    [ -z "$alive" ] && return 0
+    sleep 1
+    count=$((count + 1))
+  done
+  kill -KILL $alive 2>/dev/null || true
 }
 
 stop_pid() {
   file="$1"
-  if ! pid_running "$file"; then
-    rm -f "$file"
-    return 0
-  fi
-
-  pid="$(head -n 1 "$file" | tr -d '[:space:]')"
-  kill -TERM "$pid" 2>/dev/null || true
-  count=0
-  while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 30 ]; do
-    sleep 1
-    count=$((count + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null || true
+  marker="$2"
+  pid="$(read_pid "$file" 2>/dev/null || true)"
+  if [ -n "$pid" ] && process_matches "$pid" "$marker"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    count=0
+    while process_matches "$pid" "$marker" && [ "$count" -lt 30 ]; do
+      sleep 1
+      count=$((count + 1))
+    done
+    process_matches "$pid" "$marker" && kill -KILL "$pid" 2>/dev/null || true
   fi
   rm -f "$file"
 }
 
+port_open() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1
+}
+
+wait_ready() {
+  file="$1"
+  marker="$2"
+  port="$3"
+  limit="$4"
+  count=0
+  while [ "$count" -lt "$limit" ]; do
+    pid_running "$file" "$marker" || return 1
+    port_open "$port" && return 0
+    sleep 1
+    count=$((count + 1))
+  done
+  return 1
+}
+
+acquire_lock() {
+  mkdir -p "$(dirname "$LOCK_DIR")"
+  count=0
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    [ "$count" -ge 30 ] && return 1
+    sleep 1
+    count=$((count + 1))
+  done
+  trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+}
+
+backend_marker() {
+  runtime="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+  [ -n "$runtime" ] && printf '%s/main.cjs' "$runtime"
+}
+
 start_backend() {
-  if pid_running "$BACKEND_PID_FILE"; then
-    return 0
-  fi
+  marker="$(backend_marker)"
+  [ -n "$marker" ] && pid_running "$BACKEND_PID_FILE" "$marker" && port_open "$BACKEND_PORT" && return 0
+  rm -f "$BACKEND_PID_FILE"
+  [ -z "$marker" ] || stop_matching "$marker"
 
-  if [ ! -L "$CURRENT_LINK" ]; then
-    echo "Trilium 运行时指针不存在，请重新安装应用。" > "${TRIM_TEMP_LOGFILE}"
-    return 1
-  fi
-
+  [ -L "$CURRENT_LINK" ] || { write_error "Trilium 运行时指针不存在，请重新安装应用。"; return 1; }
   RUNTIME_DIR="$(readlink -f "$CURRENT_LINK")"
-  if [ ! -x "${RUNTIME_DIR}/node/bin/node" ] || [ ! -f "${RUNTIME_DIR}/main.cjs" ]; then
-    echo "Trilium 原生运行时不完整：${RUNTIME_DIR}" > "${TRIM_TEMP_LOGFILE}"
+  [ -x "${RUNTIME_DIR}/node/bin/node" ] && [ -f "${RUNTIME_DIR}/main.cjs" ] || {
+    write_error "Trilium 原生运行时不完整：${RUNTIME_DIR}"
     return 1
-  fi
+  }
 
   mkdir -p "${TRIM_PKGVAR}/trilium-data"
   cd "$RUNTIME_DIR" || return 1
   TRILIUM_DATA_DIR="${TRIM_PKGVAR}/trilium-data" \
   TRILIUM_NETWORK_HOST="127.0.0.1" \
-  TRILIUM_NETWORK_PORT="18080" \
+  TRILIUM_NETWORK_PORT="$BACKEND_PORT" \
   TRILIUM_NETWORK_TRUSTEDREVERSEPROXY="true" \
-  nohup "${RUNTIME_DIR}/node/bin/node" main.cjs >> "$BACKEND_LOG_FILE" 2>&1 &
-  echo "$!" > "$BACKEND_PID_FILE"
+  nohup "${RUNTIME_DIR}/node/bin/node" "${RUNTIME_DIR}/main.cjs" >> "$BACKEND_LOG_FILE" 2>&1 &
+  printf '%s\n' "$!" > "$BACKEND_PID_FILE"
+
+  wait_ready "$BACKEND_PID_FILE" "${RUNTIME_DIR}/main.cjs" "$BACKEND_PORT" 180 || {
+    stop_pid "$BACKEND_PID_FILE" "${RUNTIME_DIR}/main.cjs"
+    write_error "Trilium 后端未能启动，请查看 ${BACKEND_LOG_FILE}"
+    return 1
+  }
 }
 
 start_proxy() {
-  if pid_running "$PROXY_PID_FILE"; then
-    return 0
-  fi
+  pid_running "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" && port_open "$PUBLIC_PORT" && return 0
+  rm -f "$PROXY_PID_FILE"
+  stop_matching "${PROXY_DIR}/server.js"
+  [ -x "$PROXY_NODE" ] || { write_error "Trilium 内置 Node.js 运行时缺失。"; return 1; }
 
-  if [ ! -x "$PROXY_NODE" ]; then
-    echo "Trilium 内置 Node.js 运行时缺失。" > "${TRIM_TEMP_LOGFILE}"
-    return 1
-  fi
-
-  if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then
-    BACKUP_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
-  else
-    BACKUP_DIR="${TRIM_PKGVAR}/update-backups"
-  fi
+  if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then BACKUP_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"; else BACKUP_DIR="${TRIM_PKGVAR}/update-backups"; fi
   mkdir -p "$BACKUP_DIR" "${TRIM_PKGVAR}/failed-upgrades" "${RUNTIME_ROOT}/versions" "${RUNTIME_ROOT}/downloads"
-
   cd "$PROXY_DIR" || return 1
-  TRILIUM_PUBLIC_PORT="${TRIM_SERVICE_PORT:-8080}" \
-  TRILIUM_BACKEND_PORT="18080" \
-  TRILIUM_DATA_DIR="${TRIM_PKGVAR}/trilium-data" \
-  TRILIUM_BACKUP_DIR="$BACKUP_DIR" \
-  TRILIUM_FAILED_DIR="${TRIM_PKGVAR}/failed-upgrades" \
-  TRILIUM_RUNTIME_ROOT="$RUNTIME_ROOT" \
-  TRILIUM_CURRENT_LINK="$CURRENT_LINK" \
-  TRILIUM_VERSION_FILE="$VERSION_FILE" \
+  TRILIUM_PUBLIC_PORT="$PUBLIC_PORT" TRILIUM_BACKEND_PORT="$BACKEND_PORT" \
+  TRILIUM_DATA_DIR="${TRIM_PKGVAR}/trilium-data" TRILIUM_BACKUP_DIR="$BACKUP_DIR" \
+  TRILIUM_FAILED_DIR="${TRIM_PKGVAR}/failed-upgrades" TRILIUM_RUNTIME_ROOT="$RUNTIME_ROOT" \
+  TRILIUM_CURRENT_LINK="$CURRENT_LINK" TRILIUM_VERSION_FILE="$VERSION_FILE" \
   TRILIUM_RELEASE_ARCH="${TRILIUM_RELEASE_ARCH:-__RELEASE_ARCH__}" \
-  TRILIUM_BACKEND_PID_FILE="$BACKEND_PID_FILE" \
-  TRILIUM_BACKEND_LOG_FILE="$BACKEND_LOG_FILE" \
+  TRILIUM_BACKEND_PID_FILE="$BACKEND_PID_FILE" TRILIUM_BACKEND_LOG_FILE="$BACKEND_LOG_FILE" \
   TRILIUM_LOG_FILE="${TRIM_PKGVAR}/update.log" \
-  nohup "$PROXY_NODE" server.js >> "$PROXY_LOG_FILE" 2>&1 &
-  echo "$!" > "$PROXY_PID_FILE"
+  nohup "$PROXY_NODE" "${PROXY_DIR}/server.js" >> "$PROXY_LOG_FILE" 2>&1 &
+  printf '%s\n' "$!" > "$PROXY_PID_FILE"
+
+  wait_ready "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" "$PUBLIC_PORT" 30 || {
+    stop_pid "$PROXY_PID_FILE" "${PROXY_DIR}/server.js"
+    write_error "Trilium 桌面入口未能启动，请查看 ${PROXY_LOG_FILE}"
+    return 1
+  }
 }
 
 start_app() {
+  acquire_lock || { write_error "另一个 Trilium 启停操作仍在进行，请稍后重试。"; return 1; }
   start_backend || return 1
-  start_proxy || {
-    stop_pid "$BACKEND_PID_FILE"
-    return 1
-  }
-
-  count=0
-  while [ "$count" -lt 30 ]; do
-    if pid_running "$PROXY_PID_FILE" && pid_running "$BACKEND_PID_FILE"; then
-      return 0
-    fi
-    sleep 1
-    count=$((count + 1))
-  done
-
-  echo "Trilium 原生服务启动失败，请查看 ${BACKEND_LOG_FILE} 和 ${PROXY_LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
-  return 1
+  start_proxy || { marker="$(backend_marker)"; [ -z "$marker" ] || stop_pid "$BACKEND_PID_FILE" "$marker"; return 1; }
 }
 
 stop_app() {
-  stop_pid "$PROXY_PID_FILE"
-  stop_pid "$BACKEND_PID_FILE"
+  acquire_lock || { write_error "另一个 Trilium 启停操作仍在进行，请稍后重试。"; return 1; }
+  stop_pid "$PROXY_PID_FILE" "${PROXY_DIR}/server.js"
+  stop_matching "${PROXY_DIR}/server.js"
+  marker="$(backend_marker)"
+  if [ -n "$marker" ]; then
+    stop_pid "$BACKEND_PID_FILE" "$marker"
+    stop_matching "$marker"
+  else
+    rm -f "$BACKEND_PID_FILE"
+  fi
 }
 
 case "${1:-}" in
-  start)
-    start_app
-    ;;
-  stop)
-    stop_app
-    ;;
+  start) start_app ;;
+  stop) stop_app ;;
   status)
-    if pid_running "$PROXY_PID_FILE" && pid_running "$BACKEND_PID_FILE"; then
-      exit 0
-    fi
+    marker="$(backend_marker)"
+    if [ -n "$marker" ] && pid_running "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" && \
+       pid_running "$BACKEND_PID_FILE" "$marker" && \
+       port_open "$PUBLIC_PORT" && port_open "$BACKEND_PORT"; then exit 0; fi
     exit 3
     ;;
-  *)
-    echo "Unknown command: ${1:-}" > "${TRIM_TEMP_LOGFILE}"
-    exit 1
-    ;;
+  *) write_error "Usage: $0 {start|stop|status}"; exit 1 ;;
 esac

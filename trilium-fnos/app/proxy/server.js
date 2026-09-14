@@ -579,11 +579,21 @@ server.on("upgrade", (req, clientSocket, head) => {
   clientSocket.on("error", () => upstreamSocket.destroy());
 });
 
+const sockets = new Set();
+server.on("connection", (socket) => {
+  sockets.add(socket);
+  socket.on("close", () => sockets.delete(socket));
+});
+
 server.listen(PUBLIC_PORT, "0.0.0.0", () => log(`Trilium fnOS proxy listening on ${PUBLIC_PORT}, backend ${BACKEND_HOST}:${BACKEND_PORT}`));
 
+let shuttingDown = false;
 function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 10000).unref();
+  for (const socket of sockets) socket.destroy();
+  setTimeout(() => process.exit(1), 5000).unref();
 }
 
 process.on("SIGTERM", shutdown);

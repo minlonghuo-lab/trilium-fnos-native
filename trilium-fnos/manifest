@@ -1,5 +1,5 @@
 appname=trilium-fnos
-version=0.105.0-r2
+version=0.105.0-r3
 display_name=Trilium Notes
 desc=不依赖 Docker 的原生 Trilium Notes，内置匹配运行时、安全备份与一键更新。
 source=thirdparty
@@ -15,4 +15,4 @@ service_port=8080
 checkport=true
 ctl_stop=true
 disable_authorization_path=true
-changelog=r2：移除上游包内不安全的绝对软链接，修复 fnOS 解压 app.tgz 失败；保留纯原生运行与一键更新。
+changelog=r3：改为飞牛桌面 iframe 原生窗口；增强启停幂等、进程身份校验、遗留进程清理和端口健康检查，修复异常退出后端口被占用。

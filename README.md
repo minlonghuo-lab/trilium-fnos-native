@@ -18,7 +18,7 @@
 
 - 保留 Trilium Web 版的层级笔记、富文本、关系图、画布、思维导图、脚本、同步、加密、导入导出和 ETAPI 等功能。
 - 使用 Trilium 官方界面、图标和主题变量，不另做一套割裂的管理界面。
-- 飞牛桌面入口默认使用 `8080` 端口。
+- 飞牛桌面入口使用内嵌原生窗口，不再跳转到浏览器标签页。
 - 登录后在 Trilium 页面右下角显示“一键更新”按钮；未登录用户不能访问更新接口。
 - 提供 x86_64 与 ARM64 两个原生 FPK，内置各自架构的官方运行时。
 
@@ -95,7 +95,7 @@ appcenter-cli install-fpk trilium-fnos-v0.105.0-r2-x86_64.fpk
 
 ## 实现说明
 
-FPK 前端使用 Trilium 自身 Web UI。一个仅使用 Node.js 内置模块的轻量反向代理负责透明转发 HTTP、API 与 WebSocket，并向 HTML 注入同风格更新控件。飞牛桌面入口采用 URL 模式，以兼容 Trilium 的同源安全头、下载、打印和新窗口功能。
+FPK 前端使用 Trilium 自身 Web UI。一个仅使用 Node.js 内置模块的轻量反向代理负责透明转发 HTTP、API 与 WebSocket，并向 HTML 注入同风格更新控件。飞牛桌面入口采用 `iframe` 原生窗口模式，Trilium 的 HTTP、API 与 WebSocket 仍由本应用端口提供。
 
 这里移植的是 Trilium 官方 Server 的全部浏览器功能；仅限 Electron 桌面壳的操作系统托盘、原生窗口等能力不属于 Server 版功能。
 
