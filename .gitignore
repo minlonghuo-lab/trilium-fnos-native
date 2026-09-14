@@ -1,0 +1,6 @@
+.tools/
+.cache/
+dist/*.fpk
+*.fpk
+.DS_Store
+trilium-fnos.fpk

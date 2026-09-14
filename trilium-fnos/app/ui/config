@@ -1,0 +1,13 @@
+{
+  ".url": {
+    "trilium-fnos.main": {
+      "title": "Trilium Notes",
+      "icon": "images/icon_{0}.png",
+      "type": "url",
+      "protocol": "http",
+      "port": "8080",
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}

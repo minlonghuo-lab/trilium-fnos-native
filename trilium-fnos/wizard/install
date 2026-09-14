@@ -1,0 +1,15 @@
+[
+  {
+    "stepTitle": "Trilium Notes",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "安装后首次打开应用，请按 Trilium 向导创建密码。笔记数据保存在应用数据目录，更新备份保存在 trilium/backups 共享目录。"
+      },
+      {
+        "type": "tips",
+        "helpText": "本应用不依赖 Docker。一键更新会下载并校验官方原生发行包，短暂停服后在数据库迁移前生成冷备份。"
+      }
+    ]
+  }
+]

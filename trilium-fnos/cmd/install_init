@@ -1,0 +1,18 @@
+#!/bin/bash
+set -eu
+
+machine="$(uname -m)"
+case "__RELEASE_ARCH__:${machine}" in
+  linux-x64:x86_64|linux-x64:amd64|linux-arm64:aarch64|linux-arm64:arm64)
+    ;;
+  linux-x64:*)
+    echo "此安装包仅支持 x86_64（Intel/AMD 64 位）飞牛设备。" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+    ;;
+  linux-arm64:*)
+    echo "此安装包仅支持 ARM64（aarch64）飞牛设备。" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+    ;;
+esac
+
+exit 0

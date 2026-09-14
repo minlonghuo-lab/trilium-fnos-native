@@ -1,0 +1,11 @@
+[
+  {
+    "stepTitle": "卸载 Trilium Notes",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "卸载前请从 Trilium 导出笔记，并备份 trilium/backups 共享目录。"
+      }
+    ]
+  }
+]

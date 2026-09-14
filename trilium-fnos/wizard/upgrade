@@ -1,0 +1,11 @@
+[
+  {
+    "stepTitle": "升级 Trilium Notes",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "升级 FPK 前会自动备份 Trilium 数据。请勿在升级过程中断电。"
+      }
+    ]
+  }
+]

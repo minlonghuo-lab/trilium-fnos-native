@@ -1,0 +1,143 @@
+#!/bin/bash
+set -u
+
+PROXY_PID_FILE="${TRIM_PKGVAR}/proxy.pid"
+BACKEND_PID_FILE="${TRIM_PKGVAR}/backend.pid"
+PROXY_LOG_FILE="${TRIM_PKGVAR}/proxy.log"
+BACKEND_LOG_FILE="${TRIM_PKGVAR}/trilium.log"
+RUNTIME_ROOT="${TRIM_PKGVAR}/runtime"
+CURRENT_LINK="${RUNTIME_ROOT}/current"
+VERSION_FILE="${RUNTIME_ROOT}/current-version"
+PROXY_DIR="${TRIM_APPDEST}/proxy"
+PROXY_NODE="${TRIM_APPDEST}/server/node/bin/node"
+
+pid_running() {
+  file="$1"
+  [ -f "$file" ] || return 1
+  pid="$(head -n 1 "$file" | tr -d '[:space:]')"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+stop_pid() {
+  file="$1"
+  if ! pid_running "$file"; then
+    rm -f "$file"
+    return 0
+  fi
+
+  pid="$(head -n 1 "$file" | tr -d '[:space:]')"
+  kill -TERM "$pid" 2>/dev/null || true
+  count=0
+  while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 30 ]; do
+    sleep 1
+    count=$((count + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$file"
+}
+
+start_backend() {
+  if pid_running "$BACKEND_PID_FILE"; then
+    return 0
+  fi
+
+  if [ ! -L "$CURRENT_LINK" ]; then
+    echo "Trilium 运行时指针不存在，请重新安装应用。" > "${TRIM_TEMP_LOGFILE}"
+    return 1
+  fi
+
+  RUNTIME_DIR="$(readlink -f "$CURRENT_LINK")"
+  if [ ! -x "${RUNTIME_DIR}/node/bin/node" ] || [ ! -f "${RUNTIME_DIR}/main.cjs" ]; then
+    echo "Trilium 原生运行时不完整：${RUNTIME_DIR}" > "${TRIM_TEMP_LOGFILE}"
+    return 1
+  fi
+
+  mkdir -p "${TRIM_PKGVAR}/trilium-data"
+  cd "$RUNTIME_DIR" || return 1
+  TRILIUM_DATA_DIR="${TRIM_PKGVAR}/trilium-data" \
+  TRILIUM_NETWORK_HOST="127.0.0.1" \
+  TRILIUM_NETWORK_PORT="18080" \
+  TRILIUM_NETWORK_TRUSTEDREVERSEPROXY="true" \
+  nohup "${RUNTIME_DIR}/node/bin/node" main.cjs >> "$BACKEND_LOG_FILE" 2>&1 &
+  echo "$!" > "$BACKEND_PID_FILE"
+}
+
+start_proxy() {
+  if pid_running "$PROXY_PID_FILE"; then
+    return 0
+  fi
+
+  if [ ! -x "$PROXY_NODE" ]; then
+    echo "Trilium 内置 Node.js 运行时缺失。" > "${TRIM_TEMP_LOGFILE}"
+    return 1
+  fi
+
+  if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then
+    BACKUP_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+  else
+    BACKUP_DIR="${TRIM_PKGVAR}/update-backups"
+  fi
+  mkdir -p "$BACKUP_DIR" "${TRIM_PKGVAR}/failed-upgrades" "${RUNTIME_ROOT}/versions" "${RUNTIME_ROOT}/downloads"
+
+  cd "$PROXY_DIR" || return 1
+  TRILIUM_PUBLIC_PORT="${TRIM_SERVICE_PORT:-8080}" \
+  TRILIUM_BACKEND_PORT="18080" \
+  TRILIUM_DATA_DIR="${TRIM_PKGVAR}/trilium-data" \
+  TRILIUM_BACKUP_DIR="$BACKUP_DIR" \
+  TRILIUM_FAILED_DIR="${TRIM_PKGVAR}/failed-upgrades" \
+  TRILIUM_RUNTIME_ROOT="$RUNTIME_ROOT" \
+  TRILIUM_CURRENT_LINK="$CURRENT_LINK" \
+  TRILIUM_VERSION_FILE="$VERSION_FILE" \
+  TRILIUM_RELEASE_ARCH="${TRILIUM_RELEASE_ARCH:-__RELEASE_ARCH__}" \
+  TRILIUM_BACKEND_PID_FILE="$BACKEND_PID_FILE" \
+  TRILIUM_BACKEND_LOG_FILE="$BACKEND_LOG_FILE" \
+  TRILIUM_LOG_FILE="${TRIM_PKGVAR}/update.log" \
+  nohup "$PROXY_NODE" server.js >> "$PROXY_LOG_FILE" 2>&1 &
+  echo "$!" > "$PROXY_PID_FILE"
+}
+
+start_app() {
+  start_backend || return 1
+  start_proxy || {
+    stop_pid "$BACKEND_PID_FILE"
+    return 1
+  }
+
+  count=0
+  while [ "$count" -lt 30 ]; do
+    if pid_running "$PROXY_PID_FILE" && pid_running "$BACKEND_PID_FILE"; then
+      return 0
+    fi
+    sleep 1
+    count=$((count + 1))
+  done
+
+  echo "Trilium 原生服务启动失败，请查看 ${BACKEND_LOG_FILE} 和 ${PROXY_LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
+  return 1
+}
+
+stop_app() {
+  stop_pid "$PROXY_PID_FILE"
+  stop_pid "$BACKEND_PID_FILE"
+}
+
+case "${1:-}" in
+  start)
+    start_app
+    ;;
+  stop)
+    stop_app
+    ;;
+  status)
+    if pid_running "$PROXY_PID_FILE" && pid_running "$BACKEND_PID_FILE"; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  *)
+    echo "Unknown command: ${1:-}" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+    ;;
+esac

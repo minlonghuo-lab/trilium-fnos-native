@@ -1,0 +1,26 @@
+#!/bin/bash
+set -eu
+
+RUNTIME_ROOT="${TRIM_PKGVAR}/runtime"
+CURRENT_LINK="${RUNTIME_ROOT}/current"
+VERSION_FILE="${RUNTIME_ROOT}/current-version"
+
+mkdir -p "${TRIM_PKGVAR}/trilium-data" "${TRIM_PKGVAR}/failed-upgrades" "${RUNTIME_ROOT}/versions" "${RUNTIME_ROOT}/downloads"
+
+if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then
+  BACKUP_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+else
+  BACKUP_DIR="${TRIM_PKGVAR}/update-backups"
+fi
+
+mkdir -p "$BACKUP_DIR"
+
+if [ ! -L "$CURRENT_LINK" ]; then
+  ln -s "${TRIM_APPDEST}/server" "${RUNTIME_ROOT}/current.new"
+  mv -f "${RUNTIME_ROOT}/current.new" "$CURRENT_LINK"
+fi
+
+if [ ! -s "$VERSION_FILE" ]; then
+  cp "${TRIM_APPDEST}/server/VERSION" "$VERSION_FILE"
+fi
+exit 0

@@ -1,0 +1,16 @@
+#!/bin/bash
+set -eu
+
+DATA_DIR="${TRIM_PKGVAR}/trilium-data"
+if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then
+  BACKUP_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+else
+  BACKUP_DIR="${TRIM_PKGVAR}/update-backups"
+fi
+
+mkdir -p "$BACKUP_DIR"
+if [ -d "$DATA_DIR" ]; then
+  tar -czf "${BACKUP_DIR}/before-fpk-${TRIM_OLD_APPVER:-unknown}-$(date '+%Y%m%d-%H%M%S').tar.gz" -C "$DATA_DIR" .
+fi
+
+exit 0

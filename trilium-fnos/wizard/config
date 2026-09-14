@@ -1,0 +1,11 @@
+[
+  {
+    "stepTitle": "Trilium Notes 设置",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "Trilium 的密码、主题、同步、OpenID 与备份设置均在应用内管理。"
+      }
+    ]
+  }
+]

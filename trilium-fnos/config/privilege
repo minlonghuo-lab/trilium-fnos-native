@@ -1,0 +1,7 @@
+{
+  "defaults": {
+    "run-as": "package"
+  },
+  "username": "trilium_fnos",
+  "groupname": "trilium_fnos"
+}
