@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+export COPYFILE_DISABLE=1
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TOOLS_DIR="${ROOT_DIR}/.tools"
@@ -7,6 +8,9 @@ CACHE_DIR="${ROOT_DIR}/.cache/upstream"
 DIST_DIR="${ROOT_DIR}/dist"
 FNPACK_VERSION="1.2.3"
 UPSTREAM_VERSION="${UPSTREAM_VERSION:-v0.105.0}"
+PACKAGE_VERSION="${PACKAGE_VERSION:-${UPSTREAM_VERSION#v}-r2}"
+PACKAGE_VERSION="${PACKAGE_VERSION#v}"
+OUTPUT_VERSION="v${PACKAGE_VERSION}"
 
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) FNPACK_TARGET="darwin-arm64" ;;
@@ -18,6 +22,20 @@ esac
 
 mkdir -p "$TOOLS_DIR" "$CACHE_DIR" "$DIST_DIR"
 FNPACK="${TOOLS_DIR}/fnpack-${FNPACK_VERSION}-${FNPACK_TARGET}"
+
+if tar --version 2>&1 | grep -qi bsdtar; then
+  TAR_OWNER_ARGS=(--uid 0 --gid 0 --uname root --gname root --no-xattrs)
+else
+  TAR_OWNER_ARGS=(--owner=0 --group=0 --numeric-owner --no-xattrs)
+fi
+
+md5_file() {
+  if command -v md5sum >/dev/null 2>&1; then
+    md5sum "$1" | awk '{print $1}'
+  else
+    md5 -q "$1"
+  fi
+}
 
 if [ ! -x "$FNPACK" ]; then
   curl --fail --location --retry 3 \
@@ -45,6 +63,9 @@ build_one() {
   local actual_sha
   local build_dir
   local fpk_path
+  local unsafe_upstream_link
+  local normalize_dir
+  local app_checksum
 
   asset_meta="$(printf '%s' "$RELEASE_JSON" | python3 -c '
 import json, sys
@@ -82,9 +103,13 @@ print(h.hexdigest())
   cp -R "${ROOT_DIR}/trilium-fnos" "${build_dir}/trilium-fnos"
   mkdir -p "${build_dir}/trilium-fnos/app/server"
   tar -xJf "$archive_path" -C "${build_dir}/trilium-fnos/app/server" --strip-components=1
+  unsafe_upstream_link="${build_dir}/trilium-fnos/app/server/node_modules/tesseract.js/node_modules/.bin/opencollective-postinstall"
+  if [ -L "$unsafe_upstream_link" ]; then
+    unlink "$unsafe_upstream_link"
+  fi
   printf '%s\n' "${UPSTREAM_VERSION#v}" > "${build_dir}/trilium-fnos/app/server/VERSION"
 
-  python3 - "${build_dir}/trilium-fnos" "$fnos_platform" "$release_arch" "${UPSTREAM_VERSION#v}" <<'PY'
+  python3 - "${build_dir}/trilium-fnos" "$fnos_platform" "$release_arch" "$PACKAGE_VERSION" <<'PY'
 from pathlib import Path
 import sys
 
@@ -109,6 +134,7 @@ PY
   chmod +x "${build_dir}/trilium-fnos/app/server/node/bin/node"
   [ ! -f "${build_dir}/trilium-fnos/app/server/trilium.sh" ] || \
     chmod +x "${build_dir}/trilium-fnos/app/server/trilium.sh"
+  cp "${build_dir}/trilium-fnos/LICENSE" "${build_dir}/trilium-fnos/app/LICENSE"
 
   SKIP_INTEGRATION=1 "${ROOT_DIR}/scripts/validate.sh" "${build_dir}/trilium-fnos"
   (
@@ -120,9 +146,35 @@ PY
     echo "fnpack completed without producing an .fpk file." >&2
     exit 1
   fi
-  cp "$fpk_path" "${DIST_DIR}/trilium-fnos-${UPSTREAM_VERSION}-${output_arch}.fpk"
+
+  normalize_dir="$(mktemp -d)"
+  mkdir -p "${normalize_dir}/outer" "${normalize_dir}/payload"
+  tar -xzf "$fpk_path" -C "${normalize_dir}/outer"
+  tar -xzf "${normalize_dir}/outer/app.tgz" -C "${normalize_dir}/payload"
+  tar "${TAR_OWNER_ARGS[@]}" -czf "${normalize_dir}/app.tgz" \
+    -C "${normalize_dir}/payload" LICENSE THIRD_PARTY_NOTICES.md proxy server ui
+  mv "${normalize_dir}/app.tgz" "${normalize_dir}/outer/app.tgz"
+  app_checksum="$(md5_file "${normalize_dir}/outer/app.tgz")"
+  python3 - "${normalize_dir}/outer/manifest" "$app_checksum" <<'PY'
+from pathlib import Path
+import sys
+
+manifest_path = Path(sys.argv[1])
+checksum = sys.argv[2]
+lines = []
+for line in manifest_path.read_text().splitlines():
+    if line.lstrip().startswith("checksum"):
+        line = f"checksum                   = {checksum}"
+    lines.append(line)
+manifest_path.write_text("\n".join(lines) + "\n")
+PY
+  tar "${TAR_OWNER_ARGS[@]}" -czf "${normalize_dir}/normalized.fpk" \
+    -C "${normalize_dir}/outer" app.tgz cmd config wizard manifest ICON.PNG ICON_256.PNG
+  fpk_path="${normalize_dir}/normalized.fpk"
+
+  cp "$fpk_path" "${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk"
   rm -rf "$build_dir"
-  echo "Built ${DIST_DIR}/trilium-fnos-${UPSTREAM_VERSION}-${output_arch}.fpk"
+  echo "Built ${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk"
 }
 
 build_one x86 linux-x64 x86_64

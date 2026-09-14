@@ -384,6 +384,7 @@ async function performUpdate(release) {
     fs.mkdirSync(path.dirname(newRuntime), { recursive: true });
     setProgress("extracting", "正在解压原生运行时");
     await run("tar", ["-xJf", archivePath, "-C", stagingDir, "--strip-components=1"]);
+    fs.rmSync(path.join(stagingDir, "node_modules", "tesseract.js", "node_modules", ".bin", "opencollective-postinstall"), { force: true });
     fs.accessSync(path.join(stagingDir, "node", "bin", "node"), fs.constants.X_OK);
     fs.accessSync(path.join(stagingDir, "main.cjs"), fs.constants.R_OK);
     await run(path.join(stagingDir, "node", "bin", "node"), ["--version"]);

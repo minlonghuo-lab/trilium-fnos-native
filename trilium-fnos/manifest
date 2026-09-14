@@ -1,5 +1,5 @@
 appname=trilium-fnos
-version=0.105.0
+version=0.105.0-r2
 display_name=Trilium Notes
 desc=不依赖 Docker 的原生 Trilium Notes，内置匹配运行时、安全备份与一键更新。
 source=thirdparty
@@ -15,4 +15,4 @@ service_port=8080
 checkport=true
 ctl_stop=true
 disable_authorization_path=true
-changelog=原生版：移除 Docker 依赖，内置 Trilium Server 与匹配的 Node.js 运行时，保留一键更新与失败回退。
+changelog=r2：移除上游包内不安全的绝对软链接，修复 fnOS 解压 app.tgz 失败；保留纯原生运行与一键更新。

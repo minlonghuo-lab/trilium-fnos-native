@@ -32,6 +32,15 @@ if [ -d "${PACKAGE_DIR}/app/server" ]; then
   test -s "${PACKAGE_DIR}/app/server/main.cjs"
   test -s "${PACKAGE_DIR}/app/server/VERSION"
   ! rg -q '__RELEASE_ARCH__' "${PACKAGE_DIR}/cmd"
+  while IFS= read -r link; do
+    target="$(readlink "$link")"
+    case "$target" in
+      /*)
+        echo "Unsafe absolute symlink in app payload: ${link} -> ${target}" >&2
+        exit 1
+        ;;
+    esac
+  done < <(find "${PACKAGE_DIR}/app/server" -type l -print)
 fi
 
 if rg -qi 'docker-project|join-groups[^\n]*docker|app/docker' \
