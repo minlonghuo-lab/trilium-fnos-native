@@ -10,7 +10,7 @@ const { Readable, Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 
 const PUBLIC_PORT = Number(process.env.TRILIUM_PUBLIC_PORT || 8080);
-const BACKEND_PORT = Number(process.env.TRILIUM_BACKEND_PORT || 18080);
+const BACKEND_PORT = Number(process.env.TRILIUM_BACKEND_PORT || 18888);
 const BACKEND_HOST = "127.0.0.1";
 const DATA_DIR = process.env.TRILIUM_DATA_DIR || path.join(process.cwd(), ".trilium-data");
 const BACKUP_DIR = process.env.TRILIUM_BACKUP_DIR || path.join(process.cwd(), ".backups");
@@ -218,6 +218,10 @@ function pidRunning(pid = readPid()) {
   if (!pid) return false;
   try {
     process.kill(pid, 0);
+    const runtime = currentRuntime();
+    if (fs.realpathSync(`/proc/${pid}/exe`) !== fs.realpathSync(path.join(runtime, "node/bin/node"))) return false;
+    const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+    if (!args.includes(path.join(runtime, "main.cjs"))) return false;
     return true;
   } catch {
     return false;
@@ -246,7 +250,7 @@ async function startBackend(runtimeDir) {
   fs.accessSync(nodePath, fs.constants.X_OK);
   fs.accessSync(mainPath, fs.constants.R_OK);
   const output = fs.openSync(BACKEND_LOG_FILE, "a");
-  const child = spawn(nodePath, ["main.cjs"], {
+  const child = spawn(nodePath, [mainPath], {
     cwd: runtimeDir,
     detached: true,
     env: {
@@ -489,6 +493,23 @@ function injectManager(html) {
   return html.includes("</head>") ? html.replace("</head>", `${tags}</head>`) : `${tags}${html}`;
 }
 
+function allowFnosFrame(headers, host) {
+  // fnOS and Trilium use separate ports on the same NAS host. Keep embedding
+  // restricted to that host rather than allowing arbitrary websites to frame notes.
+  const hostname = new URL(`http://${host}`).hostname;
+  const ancestors = /^[a-z0-9.-]+$/i.test(hostname)
+    ? `'self' http://${hostname}:* https://${hostname}:*`
+    : "'self'";
+  const policies = headers["content-security-policy"];
+  const values = Array.isArray(policies) ? policies : [policies || ""];
+  headers["content-security-policy"] = values.map((policy) => {
+    const directives = String(policy).split(";")
+      .map((item) => item.trim()).filter((item) => item && !/^frame-ancestors(?:\s|$)/i.test(item));
+    return [...directives, `frame-ancestors ${ancestors}`].join("; ");
+  });
+  delete headers["x-frame-options"];
+}
+
 function proxyHttp(req, res) {
   const headers = {
     ...req.headers,
@@ -515,6 +536,7 @@ function proxyHttp(req, res) {
       upstreamRes.pipe(res);
       return;
     }
+    allowFnosFrame(responseHeaders, req.headers.host || "localhost");
 
     const chunks = [];
     let size = 0;
@@ -532,6 +554,7 @@ function proxyHttp(req, res) {
       delete responseHeaders["content-length"];
       delete responseHeaders["content-encoding"];
       delete responseHeaders["transfer-encoding"];
+      delete responseHeaders.etag;
       responseHeaders["content-length"] = body.length;
       res.writeHead(upstreamRes.statusCode || 200, responseHeaders);
       res.end(body);

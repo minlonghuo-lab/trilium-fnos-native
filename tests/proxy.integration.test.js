@@ -7,7 +7,7 @@ const { spawn } = require("node:child_process");
 const { after, before, test } = require("node:test");
 
 const root = path.resolve(__dirname, "..");
-const backendPort = 19180;
+const backendPort = 18888;
 const publicPort = 19181;
 let backend;
 let proxy;
@@ -51,7 +51,11 @@ before(async () => {
       res.writeHead(401, { "content-type": "application/json" });
       return res.end('{"error":"not logged in"}');
     }
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "x-frame-options": "SAMEORIGIN",
+      "content-security-policy": "default-src 'self'; frame-ancestors 'self'"
+    });
     res.end("<!doctype html><html><head><title>Fake Trilium</title></head><body>hello</body></html>");
   });
   await listen(backend, backendPort);
@@ -60,7 +64,6 @@ before(async () => {
     env: {
       ...process.env,
       TRILIUM_PUBLIC_PORT: String(publicPort),
-      TRILIUM_BACKEND_PORT: String(backendPort),
       TRILIUM_DATA_DIR: root,
       TRILIUM_BACKUP_DIR: root,
       TRILIUM_FAILED_DIR: root,
@@ -95,6 +98,13 @@ test("serves bundled updater assets", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers["content-type"], /application\/javascript/);
   assert.match(response.body, /triliumFnosUpdaterLoaded/);
+});
+
+test("permits same-NAS fnOS frame ports while preserving other CSP directives", async () => {
+  const response = await get(`http://127.0.0.1:${publicPort}/`);
+  assert.equal(response.headers["x-frame-options"], undefined);
+  assert.equal(response.headers["content-security-policy"],
+    "default-src 'self'; frame-ancestors 'self' http://127.0.0.1:* https://127.0.0.1:*");
 });
 
 test("does not expose manager API without a Trilium session", async () => {

@@ -19,7 +19,7 @@ done
 node --check "${PACKAGE_DIR}/app/proxy/server.js"
 node --check "${PACKAGE_DIR}/app/proxy/public/update.js"
 if [ "${SKIP_INTEGRATION:-0}" != "1" ]; then
-  node --test "${ROOT_DIR}/tests/proxy.integration.test.js"
+  node --test "${ROOT_DIR}"/tests/*.test.js
 fi
 
 test -s "${PACKAGE_DIR}/manifest"

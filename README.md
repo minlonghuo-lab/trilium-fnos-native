@@ -8,9 +8,9 @@
 
 前往 [GitHub Releases](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/latest) 下载对应 CPU 架构的原生 FPK：
 
-- [Intel / AMD 64 位版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r3/trilium-fnos-v0.105.0-r3-x86_64.fpk)
-- [ARM64 / aarch64 版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r3/trilium-fnos-v0.105.0-r3-arm64.fpk)
-- [SHA-256 校验文件](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r3/SHA256SUMS)
+- [Intel / AMD 64 位版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r4/trilium-fnos-v0.105.0-r4-x86_64.fpk)
+- [ARM64 / aarch64 版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r4/trilium-fnos-v0.105.0-r4-arm64.fpk)
+- [SHA-256 校验文件](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r4/SHA256SUMS)
 
 > 本项目是社区移植包，与飞牛官方及 TriliumNext 官方没有隶属关系。重要数据请定期自行备份。
 
@@ -24,8 +24,8 @@
 
 ## 安装包选择
 
-- Intel / AMD 64 位设备：`trilium-fnos-v0.105.0-r3-x86_64.fpk`
-- ARM64 / aarch64 设备：`trilium-fnos-v0.105.0-r3-arm64.fpk`
+- Intel / AMD 64 位设备：`trilium-fnos-v0.105.0-r4-x86_64.fpk`
+- ARM64 / aarch64 设备：`trilium-fnos-v0.105.0-r4-arm64.fpk`
 
 两个安装包不能混用。安装阶段还会检查实际 CPU 架构，避免误装。安装过程不需要拉取容器镜像；安装完成后，在没有外网的情况下也能启动当前内置版本。
 
@@ -61,7 +61,7 @@ UPSTREAM_VERSION=v0.105.0 ./scripts/build.sh
 也可以在 fnOS 终端使用：
 
 ```bash
-appcenter-cli install-fpk trilium-fnos-v0.105.0-r3-x86_64.fpk
+appcenter-cli install-fpk trilium-fnos-v0.105.0-r4-x86_64.fpk
 ```
 
 如果安装旧的 `v0.105.0` 首发包时看到“解压 app.tgz 失败”，请改用最新版。r2 已修复上游构建产物中的悬空绝对软链接，并将内外两层 tar 的属主统一为 `root/root`；r3 进一步改用飞牛 `iframe` 原生窗口，并修复异常退出后再次启动提示端口被占用的问题。
@@ -97,7 +97,13 @@ appcenter-cli install-fpk trilium-fnos-v0.105.0-r3-x86_64.fpk
 
 FPK 前端使用 Trilium 自身 Web UI。一个仅使用 Node.js 内置模块的轻量反向代理负责透明转发 HTTP、API 与 WebSocket，并向 HTML 注入同风格更新控件。飞牛桌面入口采用 `iframe` 原生窗口模式，Trilium 的 HTTP、API 与 WebSocket 仍由本应用端口提供。
 
-这里移植的是 Trilium 官方 Server 的全部浏览器功能；仅限 Electron 桌面壳的操作系统托盘、原生窗口等能力不属于 Server 版功能。
+本项目是官方 Linux Server 的原生部署封装，使用内置 Linux ELF Node 运行时与原生模块，不依赖 Docker。飞牛窗口内显示的是 Trilium Web UI，并非重写的操作系统原生控件；Electron 桌面壳的系统托盘、原生窗口等能力不包含在 Server 版中。
+
+r4 使用两个 TCP 监听端口：公开入口 `0.0.0.0:8080`，内部后端 `127.0.0.1:18888`。安装启动、代理转发、一键更新重启与回退均使用同一后端端口。启动前发现其他进程占用端口会报错，不会按端口号强制结束其他应用。
+
+r4 同时修复启停脚本的变量相互覆盖、更新后启动参数与 PID 身份检查不一致，以及 FPK 升级时运行时软链接的替换问题。内嵌窗口允许同一主机名下不同端口的 fnOS 页面加载；跨主机名、HTTPS 页面嵌入 HTTP、远程中转访问仍需对应部署配置和实机验证。
+
+构建时 `scripts/verify-fpk.py` 对最终 FPK 进行检查，并逐文件核对官方 Server 发行包的 SHA-256：除已移除的构建机悬空软链接和新增的 VERSION 文件外，官方程序文件必须全部匹配。保留 Server 文件不代表所有功能已完成实机验收；当前自动化覆盖封装、代理、窗口响应头及启停函数回归，尚未连接真实 fnOS 设备验证完整编辑、同步、OCR、导入导出和更新回退流程。
 
 发布前仍建议分别在真实 fnOS x86_64 与 ARM64 设备上完成首次安装、重启、WebSocket、大文件导入、在线更新和自动回退验收。
 

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -u
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 PROXY_PID_FILE="${TRIM_PKGVAR}/proxy.pid"
 BACKEND_PID_FILE="${TRIM_PKGVAR}/backend.pid"
@@ -11,7 +12,7 @@ VERSION_FILE="${RUNTIME_ROOT}/current-version"
 PROXY_DIR="${TRIM_APPDEST}/proxy"
 PROXY_NODE="${TRIM_APPDEST}/server/node/bin/node"
 PUBLIC_PORT="${TRIM_SERVICE_PORT:-8080}"
-BACKEND_PORT="18080"
+BACKEND_PORT="18888"
 LOCK_DIR="${TRIM_PKGTMP:-${TRIM_PKGVAR}}/lifecycle.lock"
 
 write_error() {
@@ -20,37 +21,50 @@ write_error() {
 }
 
 read_pid() {
+  local value
   [ -f "$1" ] || return 1
-  tr -cd '0-9' < "$1"
+  value="$(head -n 1 "$1")"
+  case "$value" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$value" -gt 1 ] || return 1
+  printf '%s' "$value"
 }
 
 process_matches() {
-  pid="$1"
-  marker="$2"
+  local pid="$1" marker="$2" executable expected
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pid" -gt 1 ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   [ -r "/proc/${pid}/cmdline" ] || return 1
-  tr '\0' ' ' < "/proc/${pid}/cmdline" | grep -Fq -- "$marker"
+  executable="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+  if [ "$marker" = "${PROXY_DIR}/server.js" ]; then
+    expected="$(readlink -f "$PROXY_NODE" 2>/dev/null || true)"
+  else
+    expected="$(readlink -f "${marker%/*}/node/bin/node" 2>/dev/null || true)"
+  fi
+  [ -n "$expected" ] && [ "$executable" = "$expected" ] || return 1
+  tr '\0' '\n' < "/proc/${pid}/cmdline" | grep -Fxq -- "$marker"
 }
 
 pid_running() {
-  file="$1"
-  marker="$2"
+  local file="$1" marker="$2" pid
   pid="$(read_pid "$file" 2>/dev/null || true)"
   [ -n "$pid" ] && process_matches "$pid" "$marker"
 }
 
 find_our_pids() {
-  marker="$1"
+  local marker="$1" cmdline pid
   for cmdline in /proc/[0-9]*/cmdline; do
     [ -r "$cmdline" ] || continue
-    if tr '\0' ' ' < "$cmdline" 2>/dev/null | grep -Fq -- "$marker"; then
-      basename "$(dirname "$cmdline")"
+    pid="${cmdline#/proc/}"
+    pid="${pid%/cmdline}"
+    if process_matches "$pid" "$marker"; then
+      printf '%s\n' "$pid"
     fi
   done
 }
 
 stop_matching() {
-  marker="$1"
+  local marker="$1" pids count alive pid
   pids="$(find_our_pids "$marker")"
   [ -n "$pids" ] || return 0
   kill -TERM $pids 2>/dev/null || true
@@ -68,8 +82,7 @@ stop_matching() {
 }
 
 stop_pid() {
-  file="$1"
-  marker="$2"
+  local file="$1" marker="$2" pid count
   pid="$(read_pid "$file" 2>/dev/null || true)"
   if [ -n "$pid" ] && process_matches "$pid" "$marker"; then
     kill -TERM "$pid" 2>/dev/null || true
@@ -88,10 +101,7 @@ port_open() {
 }
 
 wait_ready() {
-  file="$1"
-  marker="$2"
-  port="$3"
-  limit="$4"
+  local file="$1" marker="$2" port="$3" limit="$4" count
   count=0
   while [ "$count" -lt "$limit" ]; do
     pid_running "$file" "$marker" || return 1
@@ -103,6 +113,7 @@ wait_ready() {
 }
 
 acquire_lock() {
+  local count
   mkdir -p "$(dirname "$LOCK_DIR")"
   count=0
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
@@ -114,15 +125,18 @@ acquire_lock() {
 }
 
 backend_marker() {
+  local runtime
   runtime="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
   [ -n "$runtime" ] && printf '%s/main.cjs' "$runtime"
 }
 
 start_backend() {
+  local marker RUNTIME_DIR
   marker="$(backend_marker)"
   [ -n "$marker" ] && pid_running "$BACKEND_PID_FILE" "$marker" && port_open "$BACKEND_PORT" && return 0
   rm -f "$BACKEND_PID_FILE"
   [ -z "$marker" ] || stop_matching "$marker"
+  port_open "$BACKEND_PORT" && { write_error "后端端口 ${BACKEND_PORT} 已被其他进程占用。"; return 1; }
 
   [ -L "$CURRENT_LINK" ] || { write_error "Trilium 运行时指针不存在，请重新安装应用。"; return 1; }
   RUNTIME_DIR="$(readlink -f "$CURRENT_LINK")"
@@ -148,9 +162,11 @@ start_backend() {
 }
 
 start_proxy() {
+  local BACKUP_DIR
   pid_running "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" && port_open "$PUBLIC_PORT" && return 0
   rm -f "$PROXY_PID_FILE"
   stop_matching "${PROXY_DIR}/server.js"
+  port_open "$PUBLIC_PORT" && { write_error "入口端口 ${PUBLIC_PORT} 已被其他进程占用。"; return 1; }
   [ -x "$PROXY_NODE" ] || { write_error "Trilium 内置 Node.js 运行时缺失。"; return 1; }
 
   if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then BACKUP_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"; else BACKUP_DIR="${TRIM_PKGVAR}/update-backups"; fi
@@ -174,12 +190,14 @@ start_proxy() {
 }
 
 start_app() {
+  local marker
   acquire_lock || { write_error "另一个 Trilium 启停操作仍在进行，请稍后重试。"; return 1; }
   start_backend || return 1
   start_proxy || { marker="$(backend_marker)"; [ -z "$marker" ] || stop_pid "$BACKEND_PID_FILE" "$marker"; return 1; }
 }
 
 stop_app() {
+  local marker
   acquire_lock || { write_error "另一个 Trilium 启停操作仍在进行，请稍后重试。"; return 1; }
   stop_pid "$PROXY_PID_FILE" "${PROXY_DIR}/server.js"
   stop_matching "${PROXY_DIR}/server.js"

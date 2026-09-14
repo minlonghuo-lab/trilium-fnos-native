@@ -8,7 +8,7 @@ CACHE_DIR="${ROOT_DIR}/.cache/upstream"
 DIST_DIR="${ROOT_DIR}/dist"
 FNPACK_VERSION="1.2.3"
 UPSTREAM_VERSION="${UPSTREAM_VERSION:-v0.105.0}"
-PACKAGE_VERSION="${PACKAGE_VERSION:-${UPSTREAM_VERSION#v}-r3}"
+PACKAGE_VERSION="${PACKAGE_VERSION:-${UPSTREAM_VERSION#v}-r4}"
 PACKAGE_VERSION="${PACKAGE_VERSION#v}"
 OUTPUT_VERSION="v${PACKAGE_VERSION}"
 
@@ -173,6 +173,8 @@ PY
   fpk_path="${normalize_dir}/normalized.fpk"
 
   cp "$fpk_path" "${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk"
+  python3 "${ROOT_DIR}/scripts/verify-fpk.py" \
+    "${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk" --upstream "$archive_path"
   rm -rf "$build_dir"
   echo "Built ${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk"
 }
