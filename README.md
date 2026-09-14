@@ -8,9 +8,9 @@
 
 前往 [GitHub Releases](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/latest) 下载对应 CPU 架构的原生 FPK：
 
-- [Intel / AMD 64 位版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r2/trilium-fnos-v0.105.0-r2-x86_64.fpk)
-- [ARM64 / aarch64 版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r2/trilium-fnos-v0.105.0-r2-arm64.fpk)
-- [SHA-256 校验文件](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r2/SHA256SUMS)
+- [Intel / AMD 64 位版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r3/trilium-fnos-v0.105.0-r3-x86_64.fpk)
+- [ARM64 / aarch64 版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r3/trilium-fnos-v0.105.0-r3-arm64.fpk)
+- [SHA-256 校验文件](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r3/SHA256SUMS)
 
 > 本项目是社区移植包，与飞牛官方及 TriliumNext 官方没有隶属关系。重要数据请定期自行备份。
 
@@ -24,8 +24,8 @@
 
 ## 安装包选择
 
-- Intel / AMD 64 位设备：`trilium-fnos-v0.105.0-r2-x86_64.fpk`
-- ARM64 / aarch64 设备：`trilium-fnos-v0.105.0-r2-arm64.fpk`
+- Intel / AMD 64 位设备：`trilium-fnos-v0.105.0-r3-x86_64.fpk`
+- ARM64 / aarch64 设备：`trilium-fnos-v0.105.0-r3-arm64.fpk`
 
 两个安装包不能混用。安装阶段还会检查实际 CPU 架构，避免误装。安装过程不需要拉取容器镜像；安装完成后，在没有外网的情况下也能启动当前内置版本。
 
@@ -61,10 +61,10 @@ UPSTREAM_VERSION=v0.105.0 ./scripts/build.sh
 也可以在 fnOS 终端使用：
 
 ```bash
-appcenter-cli install-fpk trilium-fnos-v0.105.0-r2-x86_64.fpk
+appcenter-cli install-fpk trilium-fnos-v0.105.0-r3-x86_64.fpk
 ```
 
-如果安装旧的 `v0.105.0` 首发包时看到“解压 app.tgz 失败”，请改用 `v0.105.0-r2`。首发包继承了上游构建产物中的悬空绝对软链接；r2 已移除该非运行时链接，并将内外两层 tar 的属主统一为 `root/root`，同时严格限制 FPK 根目录为 fnOS 标准条目。
+如果安装旧的 `v0.105.0` 首发包时看到“解压 app.tgz 失败”，请改用最新版。r2 已修复上游构建产物中的悬空绝对软链接，并将内外两层 tar 的属主统一为 `root/root`；r3 进一步改用飞牛 `iframe` 原生窗口，并修复异常退出后再次启动提示端口被占用的问题。
 
 ## 一键更新
 
