@@ -258,7 +258,9 @@ async function startBackend(runtimeDir) {
       TRILIUM_DATA_DIR: DATA_DIR,
       TRILIUM_NETWORK_HOST: BACKEND_HOST,
       TRILIUM_NETWORK_PORT: String(BACKEND_PORT),
-      TRILIUM_NETWORK_TRUSTEDREVERSEPROXY: "true"
+      // Trilium 0.105 parses this setting as an IP address.  The proxy is
+      // the only trusted hop in this package, so trust its loopback address.
+      TRILIUM_NETWORK_TRUSTEDREVERSEPROXY: BACKEND_HOST
     },
     stdio: ["ignore", output, output]
   });

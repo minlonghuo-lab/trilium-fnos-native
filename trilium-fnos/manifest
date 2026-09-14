@@ -15,4 +15,4 @@ service_port=8080
 checkport=true
 ctl_stop=true
 disable_authorization_path=true
-changelog=r4：后端端口改为 18888，修复状态检查变量污染与更新后进程识别，完善同主机内嵌窗口兼容。
+changelog=r4：后端端口改为 18888，修复 trusted reverse proxy 地址配置、状态检查变量污染与更新后进程识别，完善同主机内嵌窗口兼容。

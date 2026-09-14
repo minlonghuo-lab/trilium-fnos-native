@@ -41,6 +41,7 @@ with tarfile.open(args.fpk, "r:gz") as outer:
     assert privilege["defaults"]["run-as"] == "package"
     main = outer.extractfile("cmd/main").read().decode()
     assert 'BACKEND_PORT="18888"' in main and "18080" not in main
+    assert 'TRILIUM_NETWORK_TRUSTEDREVERSEPROXY="127.0.0.1"' in main
     assert "__RELEASE_ARCH__" not in main
     packaged = {}
     with tarfile.open(fileobj=outer.extractfile("app.tgz"), mode="r|gz") as payload:
@@ -56,6 +57,7 @@ with tarfile.open(args.fpk, "r:gz") as outer:
             elif entry.name == "proxy/server.js":
                 proxy = stream.read().decode()
                 assert "TRILIUM_BACKEND_PORT || 18888" in proxy and "18080" not in proxy
+                assert "TRILIUM_NETWORK_TRUSTEDREVERSEPROXY: BACKEND_HOST" in proxy
 
 official = {}
 removed_link = "node_modules/tesseract.js/node_modules/.bin/opencollective-postinstall"
@@ -68,4 +70,4 @@ with tarfile.open(args.upstream, "r|xz") as upstream:
         if entry.isfile():
             official[relative] = digest(upstream.extractfile(entry))
 assert official == packaged, "Packaged Trilium files differ from the official archive"
-print(f"PASS {args.fpk}: native metadata, 18888, iframe, root ownership, checksums; {len(official)} official files match byte-for-byte")
+print(f"PASS {args.fpk}: native metadata, 18888, trusted proxy IP, iframe, root ownership, checksums; {len(official)} official files match byte-for-byte")
