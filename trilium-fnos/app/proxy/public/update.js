@@ -3,6 +3,8 @@
 
   if (window.__triliumFnosUpdaterLoaded) return;
   window.__triliumFnosUpdaterLoaded = true;
+  // Resolve alongside this script, for both the direct port and fnOS gateway.
+  const managerBase = new URL("../", document.currentScript.src);
 
   const terminalPhases = new Set(["idle", "complete", "failed", "failed-rolled-back"]);
   let snapshot = null;
@@ -16,7 +18,7 @@
     .replaceAll("'", "&#039;");
 
   async function api(path, options = {}) {
-    const response = await fetch(path, {
+    const response = await fetch(new URL(path.replace(/^\/__fnos\//, ""), managerBase), {
       credentials: "same-origin",
       cache: "no-store",
       ...options,

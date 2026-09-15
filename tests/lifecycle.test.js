@@ -25,6 +25,7 @@ process_matches() {
   case "$1:$2" in 101:/test/app/proxy/server.js|102:/test/runtime/main.cjs) return 0;; *) return 1;; esac
 }
 port_open() { [ "$1" = 8080 ] || [ "$1" = 18888 ]; }
+gateway_ready() { return 0; }
 ${dispatch}`);
   assert.equal(result.status, 0, result.stderr);
 });

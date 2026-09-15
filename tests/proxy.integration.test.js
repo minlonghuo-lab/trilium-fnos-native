@@ -3,6 +3,10 @@
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
+const net = require("node:net");
+const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { after, before, test } = require("node:test");
 
@@ -11,6 +15,9 @@ const backendPort = 18888;
 const publicPort = 19181;
 let backend;
 let proxy;
+let socketDir;
+let socketPath;
+const prefix = "/app/trilium-fnos";
 
 function listen(server, port) {
   return new Promise((resolve, reject) => {
@@ -35,9 +42,9 @@ function waitFor(url, timeoutMs = 5000) {
   });
 }
 
-function get(url) {
+function get(url, options = {}) {
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
+    http.get(url, options, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
@@ -46,10 +53,34 @@ function get(url) {
 }
 
 before(async () => {
+  // Keep Unix socket paths short on macOS as well as Linux.
+  socketDir = fs.mkdtempSync(path.join(os.tmpdir(), "tg-"));
+  socketPath = path.join(socketDir, "a.sock");
   backend = http.createServer((req, res) => {
     if (req.url === "/api/options") {
+      if (req.headers.cookie === "trilium.sid=test-session") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end('{}');
+      }
       res.writeHead(401, { "content-type": "application/json" });
       return res.end('{"error":"not logged in"}');
+    }
+    if (req.url === "/echo?encoded=a%2Fb") {
+      const chunks = [];
+      req.on("data", chunk => chunks.push(chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ url: req.url, method: req.method, body: Buffer.concat(chunks).toString(), proto: req.headers["x-forwarded-proto"], cookie: req.headers.cookie }));
+      });
+      return;
+    }
+    if (req.url === "/login") {
+      res.writeHead(302, { location: "/?login", "set-cookie": ["trilium.sid=test-session; Path=/; HttpOnly; SameSite=Lax"] });
+      return res.end();
+    }
+    if (req.url === "/binary") {
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      return res.end("unaltered /api/ and /__fnos/ note contents");
     }
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
@@ -58,12 +89,20 @@ before(async () => {
     });
     res.end("<!doctype html><html><head><title>Fake Trilium</title></head><body>hello</body></html>");
   });
+  backend.on("upgrade", (req, socket, head) => {
+    if (req.url !== "/?ws=1") return socket.destroy();
+    const accept = crypto.createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    if (head.length) socket.write(head);
+    socket.on("data", chunk => socket.write(chunk));
+  });
   await listen(backend, backendPort);
 
   proxy = spawn(process.execPath, [path.join(root, "trilium-fnos/app/proxy/server.js")], {
     env: {
       ...process.env,
       TRILIUM_PUBLIC_PORT: String(publicPort),
+      TRILIUM_GATEWAY_SOCKET: socketPath,
       TRILIUM_DATA_DIR: root,
       TRILIUM_BACKUP_DIR: root,
       TRILIUM_FAILED_DIR: root,
@@ -82,8 +121,11 @@ before(async () => {
 });
 
 after(async () => {
-  if (proxy) proxy.kill("SIGTERM");
+  if (proxy && proxy.exitCode === null) {
+    await new Promise(resolve => { proxy.once("exit", resolve); proxy.kill("SIGTERM"); });
+  }
   if (backend) await new Promise((resolve) => backend.close(resolve));
+  fs.rmSync(socketDir, { recursive: true, force: true });
 });
 
 test("injects updater assets into Trilium HTML", async () => {
@@ -110,4 +152,85 @@ test("permits same-NAS fnOS frame ports while preserving other CSP directives", 
 test("does not expose manager API without a Trilium session", async () => {
   const response = await get(`http://127.0.0.1:${publicPort}/__fnos/api/status`);
   assert.equal(response.status, 401);
+});
+
+function gateway(url, options = {}) {
+  return get(`http://nas.example${url}`, { ...options, socketPath });
+}
+
+test("gateway page stays same-origin and injects prefixed update resources", async () => {
+  const response = await gateway(`${prefix}/`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers["content-security-policy"], "default-src 'self'; frame-ancestors 'self'");
+  assert.equal(response.headers["x-frame-options"], undefined);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.match(response.body, /src="\/app\/trilium-fnos\/__fnos\/assets\/update.js"/);
+  assert.equal((await gateway(`${prefix}/__fnos/assets/update.js`)).status, 200);
+});
+
+test("gateway redirects missing trailing slash while preserving query", async () => {
+  const response = await gateway(`${prefix}?login`);
+  assert.equal(response.status, 308);
+  assert.equal(response.headers.location, `${prefix}/?login`);
+  assert.equal((await gateway(`${prefix}-other/`)).status, 404);
+  assert.equal((await gateway("/api/options")).status, 404);
+});
+
+test("gateway login scopes cookies and redirects without changing direct access", async () => {
+  const response = await gateway(`${prefix}/login`);
+  assert.equal(response.headers.location, `${prefix}/?login`);
+  assert.equal(response.headers["set-cookie"][0], `trilium.sid=test-session; Path=${prefix}/; HttpOnly; SameSite=Lax`);
+  const direct = await get(`http://127.0.0.1:${publicPort}/login`);
+  assert.equal(direct.headers.location, "/?login");
+  assert.match(direct.headers["set-cookie"][0], /Path=\/;/);
+  assert.equal((await gateway(`${prefix}/__fnos/api/progress`, { headers: { cookie: "trilium.sid=test-session" } })).status, 200);
+  assert.equal((await gateway(`${prefix}/__fnos/api/progress`)).status, 401);
+});
+
+test("gateway HEAD carries frame policy without fabricating an HTML body", async () => {
+  const response = await gateway(`${prefix}/`, { method: "HEAD" });
+  assert.equal(response.body, "");
+  assert.equal(response.headers["content-security-policy"], "default-src 'self'; frame-ancestors 'self'");
+});
+
+test("gateway streams chunked POST with unchanged bytes and encoded queries", async () => {
+  const result = await new Promise((resolve, reject) => {
+    const req = http.request({ socketPath, path: `${prefix}/echo?encoded=a%2Fb`, method: "POST", headers: { host: "nas.example", "x-forwarded-proto": "https", cookie: "trilium.sid=test-session" } }, res => {
+      let body = "";
+      res.on("data", chunk => { body += chunk; });
+      res.on("end", () => resolve(JSON.parse(body)));
+    });
+    req.on("error", reject);
+    req.write("笔记 ");
+    req.end("/api/原文");
+  });
+  assert.deepEqual(result, { url: "/echo?encoded=a%2Fb", method: "POST", body: "笔记 /api/原文", proto: "https", cookie: "trilium.sid=test-session" });
+  assert.equal((await gateway(`${prefix}/binary`)).body, "unaltered /api/ and /__fnos/ note contents");
+});
+
+test("gateway WebSocket upgrades and relays bytes bidirectionally", { timeout: 5000 }, async () => {
+  await new Promise((resolve, reject) => {
+    const socket = net.connect(socketPath);
+    let buffered = Buffer.alloc(0);
+    let upgraded = false;
+    // A masked text frame with payload 'hi'.
+    const frame = Buffer.from([0x81, 0x82, 1, 2, 3, 4, 0x68 ^ 1, 0x69 ^ 2]);
+    socket.on("connect", () => socket.write(`GET ${prefix}/?ws=1 HTTP/1.1\r\nHost: nas.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`));
+    socket.on("error", reject);
+    socket.on("data", chunk => {
+      buffered = Buffer.concat([buffered, chunk]);
+      if (!upgraded) {
+        const end = buffered.indexOf("\r\n\r\n");
+        if (end < 0) return;
+        if (!buffered.toString().startsWith("HTTP/1.1 101")) { socket.destroy(); return reject(new Error("Upgrade failed")); }
+        buffered = buffered.subarray(end + 4);
+        upgraded = true;
+        socket.write(frame);
+      }
+      if (buffered.length >= frame.length) {
+        socket.destroy();
+        try { assert.deepEqual(buffered, frame); resolve(); } catch (error) { reject(error); }
+      }
+    });
+  });
 });

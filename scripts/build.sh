@@ -8,7 +8,7 @@ CACHE_DIR="${ROOT_DIR}/.cache/upstream"
 DIST_DIR="${ROOT_DIR}/dist"
 FNPACK_VERSION="1.2.3"
 UPSTREAM_VERSION="${UPSTREAM_VERSION:-v0.105.0}"
-PACKAGE_VERSION="${PACKAGE_VERSION:-${UPSTREAM_VERSION#v}-r4}"
+PACKAGE_VERSION="${PACKAGE_VERSION:-${UPSTREAM_VERSION#v}-r5}"
 PACKAGE_VERSION="${PACKAGE_VERSION#v}"
 OUTPUT_VERSION="v${PACKAGE_VERSION}"
 
@@ -181,3 +181,16 @@ PY
 
 build_one x86 linux-x64 x86_64
 build_one arm linux-arm64 arm64
+
+# Generate checksums only after both final packages have passed verification.
+node - "$DIST_DIR" "$OUTPUT_VERSION" <<'JS'
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const [dist, version] = process.argv.slice(2);
+const lines = ["x86_64", "arm64"].map(arch => {
+  const name = `trilium-fnos-${version}-${arch}.fpk`;
+  return `${crypto.createHash("sha256").update(fs.readFileSync(path.join(dist, name))).digest("hex")}  ${name}`;
+});
+fs.writeFileSync(path.join(dist, "SHA256SUMS"), `${lines.join("\n")}\n`);
+JS

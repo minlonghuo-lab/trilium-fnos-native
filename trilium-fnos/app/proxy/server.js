@@ -8,10 +8,12 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { Readable, Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
+const { GATEWAY_PREFIX, gatewayRoute, applyFramePolicy, gatewayResponseHeaders, upstreamHeaders } = require("./gateway");
 
 const PUBLIC_PORT = Number(process.env.TRILIUM_PUBLIC_PORT || 8080);
 const BACKEND_PORT = Number(process.env.TRILIUM_BACKEND_PORT || 18888);
 const BACKEND_HOST = "127.0.0.1";
+const GATEWAY_SOCKET = process.env.TRILIUM_GATEWAY_SOCKET;
 const DATA_DIR = process.env.TRILIUM_DATA_DIR || path.join(process.cwd(), ".trilium-data");
 const BACKUP_DIR = process.env.TRILIUM_BACKUP_DIR || path.join(process.cwd(), ".backups");
 const FAILED_DIR = process.env.TRILIUM_FAILED_DIR || path.join(process.cwd(), ".failed-upgrades");
@@ -489,40 +491,19 @@ async function handleManager(req, res, pathname) {
   return json(res, 404, { error: "Not found" });
 }
 
-function injectManager(html) {
+function injectManager(html, prefix = "") {
   if (html.includes("data-trilium-fnos-manager")) return html;
-  const tags = '<link rel="stylesheet" href="/__fnos/assets/update.css" data-trilium-fnos-manager><script defer src="/__fnos/assets/update.js" data-trilium-fnos-manager></script>';
+  const tags = `<link rel="stylesheet" href="${prefix}/__fnos/assets/update.css" data-trilium-fnos-manager><script defer src="${prefix}/__fnos/assets/update.js" data-trilium-fnos-manager></script>`;
   return html.includes("</head>") ? html.replace("</head>", `${tags}</head>`) : `${tags}${html}`;
 }
 
-function allowFnosFrame(headers, host) {
-  // fnOS and Trilium use separate ports on the same NAS host. Keep embedding
-  // restricted to that host rather than allowing arbitrary websites to frame notes.
-  const hostname = new URL(`http://${host}`).hostname;
-  const ancestors = /^[a-z0-9.-]+$/i.test(hostname)
-    ? `'self' http://${hostname}:* https://${hostname}:*`
-    : "'self'";
-  const policies = headers["content-security-policy"];
-  const values = Array.isArray(policies) ? policies : [policies || ""];
-  headers["content-security-policy"] = values.map((policy) => {
-    const directives = String(policy).split(";")
-      .map((item) => item.trim()).filter((item) => item && !/^frame-ancestors(?:\s|$)/i.test(item));
-    return [...directives, `frame-ancestors ${ancestors}`].join("; ");
-  });
-  delete headers["x-frame-options"];
-}
-
-function proxyHttp(req, res) {
-  const headers = {
-    ...req.headers,
-    host: req.headers.host || `${BACKEND_HOST}:${BACKEND_PORT}`,
-    "accept-encoding": "identity",
-    "x-forwarded-for": req.socket.remoteAddress || "",
-    "x-forwarded-host": req.headers.host || "",
-    "x-forwarded-proto": "http"
-  };
-  delete headers["content-length"];
-  if (req.headers["content-length"]) headers["content-length"] = req.headers["content-length"];
+function proxyHttp(req, res, gateway = false) {
+  const headers = upstreamHeaders(req, gateway);
+  // Avoid reusing pre-r5 HTML with old CSP/updater paths from browser caches.
+  if (req.headers["sec-fetch-dest"] === "iframe" || req.headers["sec-fetch-dest"] === "document" || req.url === "/") {
+    delete headers["if-none-match"];
+    delete headers["if-modified-since"];
+  }
 
   const upstream = http.request({
     host: BACKEND_HOST,
@@ -532,13 +513,22 @@ function proxyHttp(req, res) {
     headers
   }, (upstreamRes) => {
     const responseHeaders = { ...upstreamRes.headers };
+    if (gateway) gatewayResponseHeaders(responseHeaders);
     const contentType = String(upstreamRes.headers["content-type"] || "");
+    upstreamRes.on("error", () => res.destroy());
     if (!contentType.includes("text/html")) {
       res.writeHead(upstreamRes.statusCode || 502, responseHeaders);
       upstreamRes.pipe(res);
       return;
     }
-    allowFnosFrame(responseHeaders, req.headers.host || "localhost");
+    applyFramePolicy(responseHeaders, req.headers.host || "localhost", gateway);
+    responseHeaders["cache-control"] = "no-store";
+    if (req.method === "HEAD") {
+      delete responseHeaders["content-length"];
+      res.writeHead(upstreamRes.statusCode || 200, responseHeaders);
+      upstreamRes.resume();
+      return res.end();
+    }
 
     const chunks = [];
     let size = 0;
@@ -552,7 +542,7 @@ function proxyHttp(req, res) {
         res.end("Trilium HTML response is unexpectedly large.");
         return;
       }
-      const body = Buffer.from(injectManager(Buffer.concat(chunks).toString("utf8")));
+      const body = Buffer.from(injectManager(Buffer.concat(chunks).toString("utf8"), gateway ? GATEWAY_PREFIX : ""));
       delete responseHeaders["content-length"];
       delete responseHeaders["content-encoding"];
       delete responseHeaders["transfer-encoding"];
@@ -566,32 +556,56 @@ function proxyHttp(req, res) {
   upstream.on("error", (error) => {
     if (res.headersSent) return res.end();
     const body = Buffer.from(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>Trilium 正在启动</title><style>body{margin:0;background:#2d2d2d;color:#eee;font:15px system-ui;display:grid;place-items:center;min-height:100vh}.card{padding:28px 32px;border-radius:14px;background:#383838;box-shadow:0 12px 45px #0006}h1{font-size:20px;margin:0 0 10px;color:#b5a4ff}</style><div class="card"><h1>Trilium 正在启动…</h1><div>页面将自动重试。</div><small>${String(error.code || "ECONNREFUSED")}</small></div></html>`);
-    res.writeHead(503, { "content-type": "text/html; charset=utf-8", "content-length": body.length, "retry-after": "3" });
+    const errorHeaders = { "content-type": "text/html; charset=utf-8", "content-length": body.length, "retry-after": "3", "cache-control": "no-store" };
+    applyFramePolicy(errorHeaders, req.headers.host || "localhost", gateway);
+    res.writeHead(503, errorHeaders);
     res.end(body);
   });
+  req.on("aborted", () => upstream.destroy());
+  res.on("close", () => { if (!res.writableEnded) upstream.destroy(); });
   req.pipe(upstream);
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    const pathname = new URL(req.url, `http://${req.headers.host || "localhost"}`).pathname;
-    if (pathname.startsWith("/__fnos/")) return await handleManager(req, res, pathname);
-    return proxyHttp(req, res);
-  } catch (error) {
-    log(`request error: ${error.stack || error}`);
-    if (!res.headersSent) json(res, 500, { error: "Internal server error" });
-    else res.end();
-  }
-});
+function createRequestHandler(gateway) {
+  return async (req, res) => {
+    try {
+      if (gateway) {
+        const route = gatewayRoute(req.url);
+        if (!route) return json(res, 404, { error: "Outside application gateway" });
+        if (route.redirect) {
+          res.writeHead(308, { location: route.redirect, "cache-control": "no-store" });
+          return res.end();
+        }
+        req.url = route.upstream;
+        if (req.headers["sec-fetch-dest"] === "iframe" || req.url === "/") {
+          res.once("finish", () => log(`gateway document ${req.method} status=${res.statusCode}`));
+        }
+      }
+      const pathname = new URL(req.url, `http://${req.headers.host || "localhost"}`).pathname;
+      if (pathname.startsWith("/__fnos/")) return await handleManager(req, res, pathname);
+      return proxyHttp(req, res, gateway);
+    } catch (error) {
+      log(`request error: ${error.stack || error}`);
+      if (!res.headersSent) json(res, 500, { error: "Internal server error" });
+      else res.end();
+    }
+  };
+}
 
-server.on("upgrade", (req, clientSocket, head) => {
+function proxyWebSocket(req, clientSocket, head, gateway) {
+  if (gateway) {
+    const route = gatewayRoute(req.url);
+    if (!route?.upstream) return clientSocket.destroy();
+    req.url = route.upstream;
+  }
+  let connected = false;
   const upstreamSocket = net.connect(BACKEND_PORT, BACKEND_HOST, () => {
+    connected = true;
     const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
     const headers = {
-      ...req.headers,
-      "x-forwarded-for": req.socket.remoteAddress || "",
-      "x-forwarded-host": req.headers.host || "",
-      "x-forwarded-proto": "http"
+      ...upstreamHeaders(req, gateway),
+      connection: "Upgrade",
+      upgrade: "websocket"
     };
     for (const [name, value] of Object.entries(headers)) {
       if (value !== undefined) lines.push(`${name}: ${Array.isArray(value) ? value.join(", ") : value}`);
@@ -602,26 +616,85 @@ server.on("upgrade", (req, clientSocket, head) => {
   });
   upstreamSocket.on("error", () => clientSocket.destroy());
   clientSocket.on("error", () => upstreamSocket.destroy());
-});
+  clientSocket.on("close", () => upstreamSocket.destroy());
+  upstreamSocket.on("close", () => clientSocket.destroy());
+  const timer = setTimeout(() => { if (!connected) upstreamSocket.destroy(); }, 10000);
+  timer.unref();
+  upstreamSocket.on("close", () => clearTimeout(timer));
+}
 
 const sockets = new Set();
-server.on("connection", (socket) => {
-  sockets.add(socket);
-  socket.on("close", () => sockets.delete(socket));
+function createServer(gateway) {
+  const server = http.createServer(createRequestHandler(gateway));
+  server.on("upgrade", (req, socket, head) => proxyWebSocket(req, socket, head, gateway));
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  return server;
+}
+const server = createServer(false);
+const gatewayServer = GATEWAY_SOCKET ? createServer(true) : null;
+const servers = [server, gatewayServer].filter(Boolean);
+
+async function prepareSocket() {
+  let entry;
+  try { entry = fs.lstatSync(GATEWAY_SOCKET); } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  if (!entry.isSocket()) throw new Error("Gateway path exists and is not a socket; refusing to remove it");
+  await new Promise((resolve, reject) => {
+    const probe = net.connect(GATEWAY_SOCKET);
+    probe.once("connect", () => { probe.destroy(); reject(new Error("Gateway socket is already in use")); });
+    probe.once("error", (error) => {
+      if (error.code === "ECONNREFUSED") {
+        try {
+          const current = fs.lstatSync(GATEWAY_SOCKET);
+          if (!current.isSocket() || current.ino !== entry.ino || current.dev !== entry.dev) {
+            return reject(new Error("Gateway socket changed during startup"));
+          }
+          fs.unlinkSync(GATEWAY_SOCKET);
+          resolve();
+        } catch (error) { reject(error); }
+      } else reject(error);
+    });
+    probe.setTimeout(2000, () => { probe.destroy(); reject(new Error("Gateway socket probe timed out")); });
+  });
+}
+function listen(server, address, host) {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(address, host, resolve);
+  });
+}
+async function startServers() {
+  if (gatewayServer) {
+    await prepareSocket();
+    await listen(gatewayServer, GATEWAY_SOCKET);
+    // fnOS nginx runs under a different account and needs to connect locally.
+    fs.chmodSync(GATEWAY_SOCKET, 0o666);
+    log(`fnOS gateway listening on ${GATEWAY_PREFIX}/ via Unix socket`);
+  }
+  await listen(server, PUBLIC_PORT, "0.0.0.0");
+  log(`Trilium fnOS proxy listening on ${PUBLIC_PORT}, backend ${BACKEND_HOST}:${BACKEND_PORT}`);
+}
+startServers().catch((error) => {
+  log(`proxy startup failed: ${error.message}`);
+  shutdown(1);
 });
 
-server.listen(PUBLIC_PORT, "0.0.0.0", () => log(`Trilium fnOS proxy listening on ${PUBLIC_PORT}, backend ${BACKEND_HOST}:${BACKEND_PORT}`));
-
 let shuttingDown = false;
-function shutdown() {
+function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
-  server.close(() => process.exit(0));
+  let remaining = servers.length;
+  for (const listener of servers) listener.close(() => { if (--remaining === 0) process.exit(exitCode); });
   for (const socket of sockets) socket.destroy();
   setTimeout(() => process.exit(1), 5000).unref();
 }
 
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+process.on("SIGTERM", () => shutdown());
+process.on("SIGINT", () => shutdown());
 
 module.exports = { normalizeVersion, injectManager };

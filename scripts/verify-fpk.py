@@ -42,6 +42,7 @@ with tarfile.open(args.fpk, "r:gz") as outer:
     main = outer.extractfile("cmd/main").read().decode()
     assert 'BACKEND_PORT="18888"' in main and "18080" not in main
     assert 'TRILIUM_NETWORK_TRUSTEDREVERSEPROXY="127.0.0.1"' in main
+    assert 'TRILIUM_GATEWAY_SOCKET="$GATEWAY_SOCKET"' in main
     assert "__RELEASE_ARCH__" not in main
     packaged = {}
     with tarfile.open(fileobj=outer.extractfile("app.tgz"), mode="r|gz") as payload:
@@ -53,7 +54,11 @@ with tarfile.open(args.fpk, "r:gz") as outer:
             if entry.name.startswith("server/") and entry.name != "server/VERSION":
                 packaged[entry.name[len("server/"):]] = digest(stream)
             elif entry.name == "ui/config":
-                assert next(iter(json.load(stream)[".url"].values()))["type"] == "iframe"
+                entry_config = next(iter(json.load(stream)[".url"].values()))
+                assert entry_config["type"] == "iframe"
+                assert entry_config["gatewayPrefix"] == "/app/trilium-fnos"
+                assert entry_config["gatewaySocket"] == "app.sock"
+                assert entry_config["url"] == "/app/trilium-fnos/"
             elif entry.name == "proxy/server.js":
                 proxy = stream.read().decode()
                 assert "TRILIUM_BACKEND_PORT || 18888" in proxy and "18080" not in proxy

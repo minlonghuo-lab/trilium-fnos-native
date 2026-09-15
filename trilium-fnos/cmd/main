@@ -13,6 +13,7 @@ PROXY_DIR="${TRIM_APPDEST}/proxy"
 PROXY_NODE="${TRIM_APPDEST}/server/node/bin/node"
 PUBLIC_PORT="${TRIM_SERVICE_PORT:-8080}"
 BACKEND_PORT="18888"
+GATEWAY_SOCKET="${TRIM_APPDEST}/app.sock"
 LOCK_DIR="${TRIM_PKGTMP:-${TRIM_PKGVAR}}/lifecycle.lock"
 
 write_error() {
@@ -100,6 +101,10 @@ port_open() {
   (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1
 }
 
+gateway_ready() {
+  [ -S "$GATEWAY_SOCKET" ]
+}
+
 wait_ready() {
   local file="$1" marker="$2" port="$3" limit="$4" count
   count=0
@@ -185,7 +190,7 @@ start_backend() {
 
 start_proxy() {
   local BACKUP_DIR
-  pid_running "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" && port_open "$PUBLIC_PORT" && return 0
+  pid_running "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" && port_open "$PUBLIC_PORT" && gateway_ready && return 0
   rm -f "$PROXY_PID_FILE"
   stop_matching "${PROXY_DIR}/server.js"
   port_open "$PUBLIC_PORT" && { write_error "入口端口 ${PUBLIC_PORT} 已被其他进程占用。"; return 1; }
@@ -195,6 +200,7 @@ start_proxy() {
   mkdir -p "$BACKUP_DIR" "${TRIM_PKGVAR}/failed-upgrades" "${RUNTIME_ROOT}/versions" "${RUNTIME_ROOT}/downloads"
   cd "$PROXY_DIR" || return 1
   TRILIUM_PUBLIC_PORT="$PUBLIC_PORT" TRILIUM_BACKEND_PORT="$BACKEND_PORT" \
+  TRILIUM_GATEWAY_SOCKET="$GATEWAY_SOCKET" \
   TRILIUM_DATA_DIR="${TRIM_PKGVAR}/trilium-data" TRILIUM_BACKUP_DIR="$BACKUP_DIR" \
   TRILIUM_FAILED_DIR="${TRIM_PKGVAR}/failed-upgrades" TRILIUM_RUNTIME_ROOT="$RUNTIME_ROOT" \
   TRILIUM_CURRENT_LINK="$CURRENT_LINK" TRILIUM_VERSION_FILE="$VERSION_FILE" \
@@ -204,11 +210,11 @@ start_proxy() {
   nohup "$PROXY_NODE" "${PROXY_DIR}/server.js" >> "$PROXY_LOG_FILE" 2>&1 &
   printf '%s\n' "$!" > "$PROXY_PID_FILE"
 
-  wait_ready "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" "$PUBLIC_PORT" 30 || {
+  if ! wait_ready "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" "$PUBLIC_PORT" 30 || ! gateway_ready; then
     stop_pid "$PROXY_PID_FILE" "${PROXY_DIR}/server.js"
     write_error "Trilium 桌面入口未能启动，请查看 ${PROXY_LOG_FILE}"
     return 1
-  }
+  fi
 }
 
 start_app() {
@@ -245,7 +251,7 @@ case "${1:-}" in
   status)
     marker="$(backend_marker)"
     if [ -n "$marker" ] && pid_running "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" && \
-       pid_running "$BACKEND_PID_FILE" "$marker" && port_open "$PUBLIC_PORT"; then exit 0; fi
+       pid_running "$BACKEND_PID_FILE" "$marker" && port_open "$PUBLIC_PORT" && gateway_ready; then exit 0; fi
     exit 3
     ;;
   *) write_error "Usage: $0 {start|stop|status}"; exit 1 ;;
