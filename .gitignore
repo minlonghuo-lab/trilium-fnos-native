@@ -4,3 +4,5 @@ dist/*.fpk
 *.fpk
 .DS_Store
 trilium-fnos.fpk
+output/playwright/
+.playwright-cli/

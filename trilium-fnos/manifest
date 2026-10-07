@@ -1,5 +1,5 @@
 appname=trilium-fnos
-version=0.105.0-r5
+version=0.105.0-r6
 display_name=Trilium Notes
 desc=不依赖 Docker 的原生 Trilium Notes，内置匹配运行时、安全备份与一键更新。
 source=thirdparty
@@ -15,4 +15,4 @@ service_port=8080
 checkport=true
 ctl_stop=true
 disable_authorization_path=true
-changelog=r5：接入飞牛同源 HTTPS 统一网关，适配登录 Cookie、WebSocket 与一键更新路径，修复远程网页内嵌窗口入口。
+changelog=r6：改为浏览器新页面打开，更新入口移入全局菜单；修复更新进度与生命周期，提供独立固定端口的桌面同步地址说明。

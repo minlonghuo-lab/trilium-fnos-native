@@ -16,9 +16,9 @@ for script in "${PACKAGE_DIR}"/cmd/*; do
   bash -n "$script"
 done
 
-node --check "${PACKAGE_DIR}/app/proxy/server.js"
-node --check "${PACKAGE_DIR}/app/proxy/gateway.js"
-node --check "${PACKAGE_DIR}/app/proxy/public/update.js"
+for script in "${PACKAGE_DIR}"/app/proxy/*.js "${PACKAGE_DIR}"/app/proxy/public/*.js; do
+  node --check "$script"
+done
 if [ "${SKIP_INTEGRATION:-0}" != "1" ]; then
   node --test "${ROOT_DIR}"/tests/*.test.js
 fi

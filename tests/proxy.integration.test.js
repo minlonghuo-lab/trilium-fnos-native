@@ -78,6 +78,24 @@ before(async () => {
       res.writeHead(302, { location: "/?login", "set-cookie": ["trilium.sid=test-session; Path=/; HttpOnly; SameSite=Lax"] });
       return res.end();
     }
+    if (req.url === "/api/login/sync") {
+      let body = "";
+      req.on("data", chunk => { body += chunk; });
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json", "set-cookie": ["trilium.sid=sync-session; Path=/; HttpOnly; SameSite=Lax"] });
+        res.end(JSON.stringify({ method: req.method, body }));
+      });
+      return;
+    }
+    if (req.url.startsWith("/api/sync/")) {
+      let body = "";
+      req.on("data", chunk => { body += chunk; });
+      req.on("end", () => {
+        res.writeHead(req.headers.cookie === "trilium.sid=sync-session" ? 200 : 401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ method: req.method, body, cookie: req.headers.cookie, contentType: req.headers["content-type"], lastSync: req.headers["x-last-sync-id"], url: req.url }));
+      });
+      return;
+    }
     if (req.url === "/binary") {
       res.writeHead(200, { "content-type": "application/octet-stream" });
       return res.end("unaltered /api/ and /__fnos/ note contents");
@@ -152,6 +170,36 @@ test("permits same-NAS fnOS frame ports while preserving other CSP directives", 
 test("does not expose manager API without a Trilium session", async () => {
   const response = await get(`http://127.0.0.1:${publicPort}/__fnos/api/status`);
   assert.equal(response.status, 401);
+});
+
+function postDirect(route, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port: publicPort, path: route, method: "POST", headers }, res => {
+      const chunks = [];
+      res.on("data", chunk => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+test("desktop sync login and paged updates preserve authentication, paths and bytes on the direct port", async () => {
+  // The fake server validates transport, not Trilium's cryptographic handshake.
+  const loginBody = JSON.stringify({ timestamp: "2026-10-07T00:00:00Z", hmac: "fixture-hmac" });
+  const login = await postDirect("/api/login/sync", loginBody, { "content-type": "application/json" });
+  assert.equal(login.status, 200);
+  assert.deepEqual(JSON.parse(login.body), { method: "POST", body: loginBody });
+  assert.match(login.headers["set-cookie"][0], /^trilium.sid=sync-session; Path=\/;/);
+  const cookie = login.headers["set-cookie"][0].split(";")[0];
+  const payload = JSON.stringify({ notes: [{ content: "笔记 /api/ 保持原样" }], lastSyncId: 42 });
+  const update = await postDirect("/api/sync/update?lastSyncId=42", payload, { cookie, "content-type": "application/json", "x-last-sync-id": "42" });
+  assert.equal(update.status, 200);
+  assert.deepEqual(JSON.parse(update.body), { method: "POST", body: payload, cookie, contentType: "application/json", lastSync: "42", url: "/api/sync/update?lastSyncId=42" });
+  const check = await get(`http://127.0.0.1:${publicPort}/api/sync/check`, { headers: { cookie } });
+  assert.equal(check.status, 200);
+  assert.equal(JSON.parse(check.body).method, "GET");
+  assert.equal((await get(`http://127.0.0.1:${publicPort}/api/sync/check`)).status, 401);
 });
 
 function gateway(url, options = {}) {

@@ -55,7 +55,7 @@ with tarfile.open(args.fpk, "r:gz") as outer:
                 packaged[entry.name[len("server/"):]] = digest(stream)
             elif entry.name == "ui/config":
                 entry_config = next(iter(json.load(stream)[".url"].values()))
-                assert entry_config["type"] == "iframe"
+                assert entry_config["type"] == "url"
                 assert entry_config["gatewayPrefix"] == "/app/trilium-fnos"
                 assert entry_config["gatewaySocket"] == "app.sock"
                 assert entry_config["url"] == "/app/trilium-fnos/"
@@ -75,4 +75,4 @@ with tarfile.open(args.upstream, "r|xz") as upstream:
         if entry.isfile():
             official[relative] = digest(upstream.extractfile(entry))
 assert official == packaged, "Packaged Trilium files differ from the official archive"
-print(f"PASS {args.fpk}: native metadata, 18888, trusted proxy IP, iframe, root ownership, checksums; {len(official)} official files match byte-for-byte")
+print(f"PASS {args.fpk}: native metadata, 18888, trusted proxy IP, new-tab gateway, root ownership, checksums; {len(official)} official files match byte-for-byte")

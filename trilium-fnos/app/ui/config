@@ -3,7 +3,7 @@
     "trilium-fnos.main": {
       "title": "Trilium Notes",
       "icon": "images/icon_{0}.png",
-      "type": "iframe",
+      "type": "url",
       "protocol": "",
       "gatewayPrefix": "/app/trilium-fnos",
       "gatewaySocket": "app.sock",

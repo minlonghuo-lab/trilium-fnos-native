@@ -8,9 +8,7 @@
 
 前往 [GitHub Releases](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/latest) 下载对应 CPU 架构的原生 FPK：
 
-- [Intel / AMD 64 位版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r5/trilium-fnos-v0.105.0-r5-x86_64.fpk)
-- [ARM64 / aarch64 版](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r5/trilium-fnos-v0.105.0-r5-arm64.fpk)
-- [SHA-256 校验文件](https://github.com/minlonghuo-lab/trilium-fnos-native/releases/download/v0.105.0-r5/SHA256SUMS)
+选择 `x86_64.fpk`（Intel/AMD）或 `arm64.fpk`（ARM64）及同次发布的 `SHA256SUMS`。当前源码为 `0.105.0-r6`，本地构建产物在 `dist/`；GitHub 已发布版本可能落后于源码，请确认版本号。
 
 > 本项目是社区移植包，与飞牛官方及 TriliumNext 官方没有隶属关系。重要数据请定期自行备份。
 
@@ -18,14 +16,15 @@
 
 - 保留 Trilium Web 版的层级笔记、富文本、关系图、画布、思维导图、脚本、同步、加密、导入导出和 ETAPI 等功能。
 - 使用 Trilium 官方界面、图标和主题变量，不另做一套割裂的管理界面。
-- 飞牛桌面入口使用内嵌原生窗口，不再跳转到浏览器标签页。
-- 登录后在 Trilium 页面右下角显示“一键更新”按钮；未登录用户不能访问更新接口。
+- 飞牛桌面入口在新的浏览器标签页打开，沿用同源网关；关闭网页不会停止后台服务。
+- 登录后从 Trilium 全局菜单的“飞牛管理 / 更新”进入，取消遮挡原按键的右下角悬浮按钮。
+- 管理窗口显示局域网同步候选地址。桌面客户端使用固定 8080 端口，不依赖飞牛网页登录 Cookie。
 - 提供 x86_64 与 ARM64 两个原生 FPK，内置各自架构的官方运行时。
 
 ## 安装包选择
 
-- Intel / AMD 64 位设备：`trilium-fnos-v0.105.0-r5-x86_64.fpk`
-- ARM64 / aarch64 设备：`trilium-fnos-v0.105.0-r5-arm64.fpk`
+- Intel / AMD 64 位设备：`trilium-fnos-v0.105.0-r6-x86_64.fpk`
+- ARM64 / aarch64 设备：`trilium-fnos-v0.105.0-r6-arm64.fpk`
 
 两个安装包不能混用。安装阶段还会检查实际 CPU 架构，避免误装。安装过程不需要拉取容器镜像；安装完成后，在没有外网的情况下也能启动当前内置版本。
 
@@ -62,20 +61,20 @@ UPSTREAM_VERSION=v0.105.0 ./scripts/build.sh
 也可以在 fnOS 终端使用：
 
 ```bash
-appcenter-cli install-fpk trilium-fnos-v0.105.0-r5-x86_64.fpk
+appcenter-cli install-fpk trilium-fnos-v0.105.0-r6-x86_64.fpk
 ```
 
 如果安装旧的 `v0.105.0` 首发包时看到“解压 app.tgz 失败”，请改用最新版。r2 已修复上游构建产物中的悬空绝对软链接，并将内外两层 tar 的属主统一为 `root/root`；r3 进一步改用飞牛 `iframe` 原生窗口，并修复异常退出后再次启动提示端口被占用的问题。
 
-### 从 r4 升级到 r5
+### 从旧封装升级到 r6
 
-先备份数据，在飞牛应用中心停止应用，再手动安装 r5 FPK 升级，启动后刷新飞牛网页、关闭旧 Trilium 窗口并重新打开。保留应用数据，不需要卸载。应用内“一键更新”更新的是 Trilium 官方运行时，**不会升级本项目的 FPK 入口和代理**，所以本次入口修复需要安装 r5 FPK。
+先备份数据，确认没有正在进行的在线更新，在飞牛应用中心停止应用，再手动安装 r6 FPK 升级，启动后刷新飞牛网页、关闭旧 Trilium 窗口并重新打开。保留应用数据，不需要卸载。应用内“一键更新”更新的是 Trilium 官方运行时，**不会升级本项目的 FPK 入口和代理**，所以本次修复需要安装 r6 FPK。
 
-r5 入口为当前飞牛访问域名下的 `/app/trilium-fnos/`，使用系统 HTTPS 和 NAS 登录态。国内版要求 fnOS 至少 `1.1.3100`（沿用本包已有最低版本）。NAS 登录后仍需 Trilium 自己的密码；所有 NAS 用户访问的是同一份 Trilium 笔记库。
+r6 入口仍为当前飞牛访问域名下的 `/app/trilium-fnos/`，使用系统 HTTPS 和 NAS 登录态，只将打开方式改为 `type=url` 新页面。国内版要求 fnOS 至少 `1.1.3100`。NAS 登录后仍需 Trilium 自己的密码；所有 NAS 用户访问的是同一份 Trilium 笔记库。新标签页不意味着容器化，本包仍为无 Docker 原生进程。
 
 ## 一键更新
 
-登录 Trilium 后，点击页面右下角的更新按钮。更新器只接受已登录、同源且带固定动作头的请求，并执行固定流程：
+登录 Trilium 后，打开全局菜单 → **飞牛管理 / 更新**。菜单随 Trilium 主题变化，不覆盖编辑器或原有按键。版本查询与菜单初始化分离，访问 GitHub 失败会显示错误并允许重试。更新器只接受已登录、同源且带固定动作头的请求，并执行固定流程：
 
 1. 查询 TriliumNext 官方 GitHub 最新稳定版。
 2. 下载当前 CPU 架构对应的官方 Server 发行包。
@@ -83,9 +82,37 @@ r5 入口为当前飞牛访问域名下的 `/app/trilium-fnos/`，使用系统 H
 4. 在 Trilium 仍可使用时完成下载、校验和解压。
 5. 停止后台进程并创建数据冷备份。
 6. 原子切换运行时，启动新版本并等待健康检查和数据库迁移。
-7. 如果失败，自动恢复旧运行时和更新前数据。
+7. 新运行时失败时，使用完整冷备份恢复旧运行时和更新前数据；未完成的备份不会被用于覆盖数据。
+
+更新任务与飞牛启停共用互斥锁，避免重复更新或同时启动第二个后端。更新进度使用仅可读取当前任务、有期限的随机凭证，在后端重启期间仍可查询；它不能触发更新或读取笔记。前端显示查询失败和重试入口，完成后停止轮询。
+
+冷备份/迁移期间，只有持有任务锁、身份匹配且任务未过期的代理才能保持 fnOS 的运行状态。此时拒绝手动停止，请等待任务完成；这不代表同步零中断。网页关闭不停止进程；同一标签页保留凭证时仍可读取进度，新标签页需等待后端恢复登录验证后读取状态。系统断电、NAS 重启或手动杀进程不等同于正常更新失败，仍需检查数据及日志，不能保证自动恢复。
+
+为了保护管理接口，未初始化或关闭 Trilium 登录验证（`noAuthentication`）的实例不开放在线更新。保持 Trilium 密码验证开启；不能用放开鉴权来解决更新问题。
 
 同步协议可能随版本变化。若实例与 TriliumDroid、桌面客户端或其他节点同步，更新前请确认各端版本兼容。
+
+## 电脑端同步：稳定地址与生命周期
+
+浏览器入口和同步入口用途不同：
+
+| 用途 | 地址 | 是否依赖飞牛网页登录 |
+| --- | --- | --- |
+| 飞牛桌面点击打开 | `https://你的飞牛域名/app/trilium-fnos/` | 是 |
+| 可信局域网电脑同步 | `http://NAS固定IP:8080/` | 否，仅使用 Trilium 自身同步认证 |
+| 外网电脑同步 | `https://你的独立Trilium域名/` → NAS `8080` | 否，需自行配置 HTTPS 反向代理 |
+| 内部后端 | `127.0.0.1:18888` | 仅本机代理使用，不对电脑开放 |
+
+1. 在路由器为 NAS 设置 DHCP 地址保留，或配置合适的静态 IP。程序固定端口，但不能保证路由器分配的 IP 不变。
+2. 在“飞牛管理 / 更新”查看当前检测到的局域网地址，选择电脑实际可达的地址；多网卡地址仅为候选，不保证全部可达。
+3. 对已有服务端笔记库的新电脑，在 Trilium 初始设置中选择从同步服务器同步，填上述独立地址和 Trilium 凭据。已有客户端可在 Options → Sync → Sync server 查看地址并 Test sync。两端应使用兼容版本，校准系统时间，开始前备份现有数据；不要把两个独立笔记库当作自动无损合并。
+4. 不要填 `/app/trilium-fnos/`、`/__fnos/` 或 `18888` 作为桌面同步地址。飞牛远程域名能打开网页，不代表它的 `8080` 可直连。
+
+局域网 HTTP 仅适用于可信网络；跨公网使用有效证书的 HTTPS 或先连接私有 VPN，不建议直接暴露 HTTP 8080。本项目不会替你创建公网域名、端口转发、防火墙放行或证书。外部反向代理应保留完整 Host（包括自定义端口，例如 nginx 的 `proxy_set_header Host $http_host;`），否则管理接口的同源校验会拒绝更新；不要通过关闭同源检查来绕过。
+
+应用启动后，关闭浏览器或退出飞牛网页不影响本地服务。启停、NAS 重启和在线更新都沿用同一个 8080 入口及持久数据目录，不随机换端口；应用停止、设备断网或更新重启期间地址仍相同，但暂时不能同步。NAS 开机自启动还需在 fnOS 应用设置中启用并实机验证。
+
+参考：[Trilium 官方同步指南](https://docs.triliumnotes.org/user-guide/setup/synchronization)、[飞牛应用入口文档](https://developer.fnnas.com/docs/core-concepts/app-entry)。
 
 ## 数据、备份与日志
 
@@ -102,7 +129,7 @@ r5 入口为当前飞牛访问域名下的 `/app/trilium-fnos/`，使用系统 H
 
 ## 实现说明
 
-FPK 前端使用 Trilium 自身 Web UI。一个仅使用 Node.js 内置模块的轻量反向代理负责转发 HTTP、API 与 WebSocket，并向 HTML 注入同风格更新控件。飞牛桌面入口采用 `iframe` 窗口，通过[官方统一网关](https://developer.fnnas.com/docs/core-concepts/gateway-registration)转发到本地 Unix Socket `${TRIM_APPDEST}/app.sock`。
+FPK 前端使用 Trilium 自身 Web UI。一个仅使用 Node.js 内置模块的轻量反向代理负责转发 HTTP、API 与 WebSocket，并向 HTML 注入同风格菜单管理入口。飞牛桌面入口采用 `url` 新页面，通过[官方统一网关](https://developer.fnnas.com/docs/core-concepts/gateway-registration)转发到本地 Unix Socket `${TRIM_APPDEST}/app.sock`。
 
 本项目是官方 Linux Server 的原生部署封装，使用内置 Linux ELF Node 运行时与原生模块，不依赖 Docker。飞牛窗口内显示的是 Trilium Web UI，并非重写的操作系统原生控件；Electron 桌面壳的系统托盘、原生窗口等能力不包含在 Server 版中。
 

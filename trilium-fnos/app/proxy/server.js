@@ -9,6 +9,11 @@ const { spawn } = require("node:child_process");
 const { Readable, Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { GATEWAY_PREFIX, gatewayRoute, applyFramePolicy, gatewayResponseHeaders, upstreamHeaders } = require("./gateway");
+const { createUpdateController } = require("./update-controller");
+const { getConnectionInfo } = require("./connections");
+const { createColdBackup, restoreBackup } = require("./update-recovery");
+const { authenticatedTriliumSession } = require("./authentication");
+const { assertStableRelease } = require("./versions");
 
 const PUBLIC_PORT = Number(process.env.TRILIUM_PUBLIC_PORT || 8080);
 const BACKEND_PORT = Number(process.env.TRILIUM_BACKEND_PORT || 18888);
@@ -42,10 +47,19 @@ const state = {
   error: null
 };
 
+const updater = createUpdateController({
+  state, currentVersion, latestRelease, performUpdate, isAuthenticated, sameOrigin,
+  json, log, runtimeRoot: RUNTIME_ROOT, lockDir: process.env.TRILIUM_LIFECYCLE_LOCK,
+  connectionInfo: () => getConnectionInfo(PUBLIC_PORT)
+});
+
 function log(message) {
   const line = `${new Date().toISOString()} ${message}\n`;
   process.stdout.write(line);
-  if (LOG_FILE) fs.appendFileSync(LOG_FILE, line);
+  if (LOG_FILE) {
+    try { fs.appendFileSync(LOG_FILE, line); }
+    catch (error) { process.stderr.write(`Unable to append proxy log: ${error.code || "IO_ERROR"}\n`); }
+  }
 }
 
 function json(res, status, body) {
@@ -85,11 +99,11 @@ function run(command, args, options = {}) {
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-      log(chunk.toString().trimEnd());
+      stdout = (stdout + chunk).slice(-1024 * 1024);
+      if (!options.quiet) log(chunk.toString().trimEnd());
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk;
+      stderr = (stderr + chunk).slice(-1024 * 1024);
       log(chunk.toString().trimEnd());
     });
     child.on("error", reject);
@@ -122,9 +136,7 @@ async function latestRelease() {
   });
   if (!response.ok) throw new Error(`GitHub 版本检查失败（HTTP ${response.status}）`);
   const release = await response.json();
-  if (!/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(release.tag_name || "")) {
-    throw new Error("GitHub 返回了无效的版本号。");
-  }
+  assertStableRelease(release);
   if (!["linux-x64", "linux-arm64"].includes(RELEASE_ARCH)) {
     throw new Error(`不支持的原生架构：${RELEASE_ARCH}`);
   }
@@ -148,16 +160,7 @@ async function latestRelease() {
 }
 
 async function isAuthenticated(req) {
-  try {
-    const response = await fetch(`http://${BACKEND_HOST}:${BACKEND_PORT}/api/options`, {
-      headers: { cookie: req.headers.cookie || "" },
-      redirect: "manual",
-      signal: AbortSignal.timeout(5000)
-    });
-    return response.status === 200;
-  } catch {
-    return false;
-  }
+  return authenticatedTriliumSession(req, `http://${BACKEND_HOST}:${BACKEND_PORT}`);
 }
 
 function sameOrigin(req) {
@@ -183,7 +186,7 @@ async function waitForHealthy(timeoutMs = 180000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
-  throw new Error("Trilium 在 3 分钟内未通过健康检查。");
+  throw new Error(`Trilium 在 ${Math.round(timeoutMs / 1000)} 秒内未通过健康检查。`);
 }
 
 function stamp() {
@@ -194,6 +197,7 @@ function setProgress(phase, message, detail = "") {
   state.phase = phase;
   state.message = message;
   state.detail = detail;
+  updater.progressChanged();
   log(`${phase}: ${message}${detail ? ` (${detail})` : ""}`);
 }
 
@@ -233,6 +237,7 @@ function pidRunning(pid = readPid()) {
 async function stopBackend() {
   const pid = readPid();
   if (!pidRunning(pid)) {
+    if (await backendPortInUse()) throw new Error("后端端口仍被占用，但无法确认进程身份；已取消更新，不创建可能不一致的备份。");
     fs.rmSync(BACKEND_PID_FILE, { force: true });
     return;
   }
@@ -241,8 +246,32 @@ async function stopBackend() {
   while (Date.now() < deadline && pidRunning(pid)) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  if (pidRunning(pid)) process.kill(pid, "SIGKILL");
+  if (pidRunning(pid)) {
+    process.kill(pid, "SIGKILL");
+    const killDeadline = Date.now() + 5000;
+    while (Date.now() < killDeadline && pidRunning(pid)) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (pidRunning(pid)) throw new Error("Trilium 进程未退出，已取消更新以保护数据。");
+  }
+  if (await backendPortInUse()) throw new Error("后端端口尚未释放，已取消更新以保护数据。");
   fs.rmSync(BACKEND_PID_FILE, { force: true });
+}
+
+function backendPortInUse() {
+  return new Promise(resolve => {
+    const socket = net.connect(BACKEND_PORT, BACKEND_HOST);
+    let done = false;
+    const finish = busy => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve(busy);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", error => finish(error.code !== "ECONNREFUSED"));
+    socket.setTimeout(1000, () => finish(true));
+  });
 }
 
 async function startBackend(runtimeDir) {
@@ -266,11 +295,12 @@ async function startBackend(runtimeDir) {
     },
     stdio: ["ignore", output, output]
   });
-  await new Promise((resolve, reject) => {
-    child.once("spawn", resolve);
-    child.once("error", reject);
-  });
-  fs.closeSync(output);
+  try {
+    await new Promise((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+  } finally { fs.closeSync(output); }
   fs.writeFileSync(BACKEND_PID_FILE, `${child.pid}\n`);
   child.unref();
 }
@@ -344,11 +374,9 @@ function pruneRuntimes(keepPaths) {
 
 async function rollback(oldRuntime, oldVersion, backupPath, failedPath) {
   setProgress("rollback", "更新失败，正在自动回退");
-  await stopBackend().catch(() => {});
+  await stopBackend();
+  await restoreBackup({ run, dataDir: DATA_DIR, backupPath, failedPath });
   activateRuntime(oldRuntime, oldVersion);
-  if (fs.existsSync(DATA_DIR)) fs.renameSync(DATA_DIR, failedPath);
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  await run("tar", ["-xzf", backupPath, "-C", DATA_DIR]);
   await startBackend(oldRuntime);
   await waitForHealthy(120000);
 }
@@ -362,6 +390,9 @@ async function performUpdate(release) {
   let archivePath = null;
   let stagingDir = null;
   let newRuntime = null;
+  let backupComplete = false;
+  let switched = false;
+  let backendStopped = false;
 
   state.startedAt = new Date().toISOString();
   state.finishedAt = null;
@@ -373,8 +404,8 @@ async function performUpdate(release) {
     setProgress("inspecting", "正在读取当前版本");
     oldRuntime = currentRuntime();
     oldVersion = await currentVersion();
-    backupPath = path.join(BACKUP_DIR, `before-update-${oldVersion}-to-${targetVersion}-${stamp()}.tar.gz`);
-    failedPath = path.join(FAILED_DIR, `failed-${targetVersion}-${stamp()}`);
+    backupPath = path.join(BACKUP_DIR, `before-update-${oldVersion}-to-${targetVersion}-${stamp()}-${state.taskId}.tar.gz`);
+    failedPath = path.join(FAILED_DIR, `failed-${targetVersion}-${stamp()}-${state.taskId}`);
     state.fromVersion = oldVersion;
 
     archivePath = path.join(RUNTIME_ROOT, "downloads", release.assetName);
@@ -404,20 +435,27 @@ async function performUpdate(release) {
 
     setProgress("stopping", "正在停止 Trilium");
     await stopBackend();
+    backendStopped = true;
 
     setProgress("backing-up", "正在创建冷备份", backupPath);
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    fs.mkdirSync(FAILED_DIR, { recursive: true });
-    await run("tar", ["-czf", backupPath, "-C", DATA_DIR, "."]);
+    fs.mkdirSync(FAILED_DIR, { recursive: true, mode: 0o700 });
+    await createColdBackup({ run, dataDir: DATA_DIR, backupPath });
+    backupComplete = true;
 
     setProgress("switching", "正在切换原生运行时");
+    // Activation is a two-file operation; even a partial activation needs the
+    // previous runtime restored, but only from a validated complete backup.
+    switched = true;
     activateRuntime(newRuntime, targetVersion);
     await startBackend(newRuntime);
 
     setProgress("checking", "正在等待数据库迁移和健康检查");
     await waitForHealthy();
-    await pruneBackups();
-    pruneRuntimes([newRuntime, oldRuntime]);
+    // Cleanup must not roll back a successfully migrated and healthy database.
+    try {
+      await pruneBackups();
+      pruneRuntimes([newRuntime, oldRuntime]);
+    } catch (error) { log(`update cleanup warning: ${error.message}`); }
 
     setProgress("complete", `已更新到 ${targetVersion}`);
     state.finishedAt = new Date().toISOString();
@@ -426,7 +464,7 @@ async function performUpdate(release) {
     state.error = originalError.message;
     log(`update failed: ${originalError.stack || originalError.message}`);
 
-    if (oldRuntime && oldVersion && backupPath && failedPath && fs.existsSync(backupPath)) {
+    if (switched && backupComplete && oldRuntime && oldVersion) {
       try {
         await rollback(oldRuntime, oldVersion, backupPath, failedPath);
         state.phase = "failed-rolled-back";
@@ -437,58 +475,46 @@ async function performUpdate(release) {
         state.error += `\n回退错误: ${rollbackError.message}`;
       }
     } else {
-      if (oldRuntime && !pidRunning()) await startBackend(oldRuntime).catch(() => {});
       state.phase = "failed";
       state.message = "更新失败，未更改数据";
+      if (backendStopped && oldRuntime && !pidRunning()) {
+        try {
+          await startBackend(oldRuntime);
+          await waitForHealthy(120000);
+        } catch (restartError) {
+          state.message = "更新失败，原数据未更改，但旧版本恢复启动失败";
+          state.error += `\n重启错误: ${restartError.message}`;
+        }
+      }
     }
-    if (archivePath) fs.rmSync(archivePath, { force: true });
-    if (stagingDir) fs.rmSync(stagingDir, { recursive: true, force: true });
+    for (const temporary of [archivePath, stagingDir].filter(Boolean)) {
+      try { fs.rmSync(temporary, { recursive: temporary === stagingDir, force: true }); }
+      catch (cleanupError) { log(`update failure cleanup warning: ${cleanupError.message}`); }
+    }
     state.finishedAt = new Date().toISOString();
   }
 }
 
-async function handleManager(req, res, pathname) {
+async function handleManager(req, res, pathname, gateway) {
   if (pathname === "/__fnos/assets/update.js") return sendAsset(res, "update.js", "application/javascript; charset=utf-8");
   if (pathname === "/__fnos/assets/update.css") return sendAsset(res, "update.css", "text/css; charset=utf-8");
 
-  const authenticated = await isAuthenticated(req);
-  if (!authenticated) return json(res, 401, { error: "请先登录 Trilium。" });
-
-  if (pathname === "/__fnos/api/status" && req.method === "GET") {
-    try {
-      const latest = await latestRelease();
-      const current = await currentVersion();
-      return json(res, 200, { current, latest, busy: !["idle", "complete", "failed", "failed-rolled-back"].includes(state.phase), state });
-    } catch (error) {
-      return json(res, 502, { error: error.message, state });
+  if ((pathname === "/__fnos" || pathname === "/__fnos/") && ["GET", "HEAD"].includes(req.method)) {
+    if (!await isAuthenticated(req)) return json(res, 401, { error: "请先登录 Trilium；无认证模式下不开放飞牛管理。" });
+    if (pathname === "/__fnos") {
+      res.writeHead(308, { location: `${gateway ? GATEWAY_PREFIX : ""}/__fnos/`, "cache-control": "no-store" });
+      return res.end();
     }
+    const body = Buffer.from('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trilium 飞牛管理</title><link rel="stylesheet" href="./assets/update.css"><script defer src="./assets/update.js"></script></head><body data-trilium-fnos-management><main><h1>Trilium 飞牛管理</h1><p>独立管理入口，不依赖 Trilium 菜单结构。</p><button type="button" data-trilium-fnos-open>打开管理</button> <a href="../">返回 Trilium Notes</a></main></body></html>');
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8", "content-length": body.length,
+      "cache-control": "no-store", "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'"
+    });
+    return res.end(req.method === "HEAD" ? undefined : body);
   }
 
-  if (pathname === "/__fnos/api/progress" && req.method === "GET") {
-    return json(res, 200, state);
-  }
-
-  if (pathname === "/__fnos/api/update" && req.method === "POST") {
-    if (!sameOrigin(req) || req.headers["x-trilium-fnos-action"] !== "update") {
-      return json(res, 403, { error: "更新请求验证失败。" });
-    }
-    if (!["idle", "complete", "failed", "failed-rolled-back"].includes(state.phase)) {
-      return json(res, 409, { error: "已有更新任务正在运行。", state });
-    }
-    try {
-      const latest = await latestRelease();
-      if (await currentVersion() === latest.version) {
-        return json(res, 200, { message: "当前已是最新稳定版。", state });
-      }
-      setProgress("queued", `已排队更新到 ${latest.version}`);
-      performUpdate(latest).catch((error) => log(`unhandled update error: ${error.stack || error}`));
-      return json(res, 202, { message: `已开始更新到 ${latest.version}。`, state });
-    } catch (error) {
-      return json(res, 502, { error: error.message, state });
-    }
-  }
-
-  return json(res, 404, { error: "Not found" });
+  return updater.handle(req, res, pathname);
 }
 
 function injectManager(html, prefix = "") {
@@ -582,7 +608,7 @@ function createRequestHandler(gateway) {
         }
       }
       const pathname = new URL(req.url, `http://${req.headers.host || "localhost"}`).pathname;
-      if (pathname.startsWith("/__fnos/")) return await handleManager(req, res, pathname);
+      if (pathname === "/__fnos" || pathname.startsWith("/__fnos/")) return await handleManager(req, res, pathname, gateway);
       return proxyHttp(req, res, gateway);
     } catch (error) {
       log(`request error: ${error.stack || error}`);
