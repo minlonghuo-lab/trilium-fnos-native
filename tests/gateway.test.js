@@ -1,7 +1,16 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { applyFramePolicy, upstreamHeaders, gatewayResponseHeaders } = require("../trilium-fnos/app/proxy/gateway");
+const { applyFramePolicy, upstreamHeaders, gatewayResponseHeaders, gatewayRequestCookies } = require("../trilium-fnos/app/proxy/gateway");
+
+test("HTTPS gateway isolates sessions and permits secure embedded login", () => {
+  const headers = { "set-cookie": ["trilium.sid=signed; Path=/; HttpOnly; SameSite=Lax"] };
+  gatewayResponseHeaders(headers, true);
+  assert.equal(headers["set-cookie"][0], "trilium-fnos.sid=signed; Path=/app/trilium-fnos/; HttpOnly; SameSite=None; Secure");
+  const req = { headers: { cookie: "nas=keep; trilium.sid=old; trilium-fnos.sid=signed" } };
+  gatewayRequestCookies(req);
+  assert.equal(req.headers.cookie, "nas=keep; trilium.sid=signed");
+});
 
 test("gateway updates all combined CSP policies without widening trusted domains", () => {
   const headers = { "content-security-policy": ["default-src 'self'; frame-ancestors 'none', script-src 'self'; frame-ancestors https://old.example", "object-src 'none'"], "x-frame-options": "DENY" };

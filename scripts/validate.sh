@@ -30,7 +30,7 @@ test -s "${PACKAGE_DIR}/LICENSE"
 
 if [ -d "${PACKAGE_DIR}/app/server" ]; then
   test -x "${PACKAGE_DIR}/app/server/node/bin/node"
-  test -s "${PACKAGE_DIR}/app/server/main.cjs"
+  test -s "${PACKAGE_DIR}/app/server/main.mjs" || test -s "${PACKAGE_DIR}/app/server/main.cjs"
   test -s "${PACKAGE_DIR}/app/server/VERSION"
   ! rg -q '__RELEASE_ARCH__' "${PACKAGE_DIR}/cmd"
   while IFS= read -r link; do

@@ -100,6 +100,14 @@ before(async () => {
       res.writeHead(200, { "content-type": "application/octet-stream" });
       return res.end("unaltered /api/ and /__fnos/ note contents");
     }
+    if (req.url === "/attachment.html") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end("<html><head></head><body>Note attachment unchanged</body></html>");
+    }
+    if (req.url === "/compressed.js") {
+      res.writeHead(200, { "content-type": "application/javascript", "content-encoding": "gzip", "x-seen-encoding": req.headers["accept-encoding"] || "" });
+      return res.end(require("node:zlib").gzipSync("/* compressed official asset */"));
+    }
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
       "x-frame-options": "SAMEORIGIN",
@@ -146,18 +154,18 @@ after(async () => {
   fs.rmSync(socketDir, { recursive: true, force: true });
 });
 
-test("injects updater assets into Trilium HTML", async () => {
+test("injects sync assets into Trilium HTML", async () => {
   const response = await get(`http://127.0.0.1:${publicPort}/`);
   assert.equal(response.status, 200);
   assert.match(response.body, /data-trilium-fnos-manager/);
-  assert.match(response.body, /\/__fnos\/assets\/update\.js/);
+  assert.match(response.body, /\/__fnos\/assets\/sync\.js/);
 });
 
-test("serves bundled updater assets", async () => {
-  const response = await get(`http://127.0.0.1:${publicPort}/__fnos/assets/update.js`);
+test("serves bundled sync assets", async () => {
+  const response = await get(`http://127.0.0.1:${publicPort}/__fnos/assets/sync.js`);
   assert.equal(response.status, 200);
   assert.match(response.headers["content-type"], /application\/javascript/);
-  assert.match(response.body, /triliumFnosUpdaterLoaded/);
+  assert.match(response.body, /triliumFnosSyncLoaded/);
 });
 
 test("permits same-NAS fnOS frame ports while preserving other CSP directives", async () => {
@@ -168,8 +176,35 @@ test("permits same-NAS fnOS frame ports while preserving other CSP directives", 
 });
 
 test("does not expose manager API without a Trilium session", async () => {
-  const response = await get(`http://127.0.0.1:${publicPort}/__fnos/api/status`);
+  const response = await get(`http://127.0.0.1:${publicPort}/__fnos/api/connections`);
   assert.equal(response.status, 401);
+});
+
+test("removed updater endpoints are unavailable even to a logged-in user", async () => {
+  for (const endpoint of ["status", "check", "update", "progress"]) {
+    const route = `/__fnos/api/${endpoint}`;
+    assert.equal((await get(`http://127.0.0.1:${publicPort}${route}`, { headers: { cookie: "trilium.sid=test-session" } })).status, 404);
+    assert.equal((await postDirect(route, "", { cookie: "trilium.sid=test-session" })).status, 405);
+  }
+  assert.equal((await get(`http://127.0.0.1:${publicPort}/__fnos/assets/update.js`)).status, 404);
+});
+
+test("sync page is read-only, authenticated, and contains no update controls", async () => {
+  const page = await gateway(`${prefix}/__fnos/`, { headers: { cookie: "trilium-fnos.sid=test-session" } });
+  assert.equal(page.status, 200);
+  assert.match(page.body, /电脑端同步/);
+  assert.doesNotMatch(page.body, /检查更新|一键更新|api\/update/);
+  const info = await gateway(`${prefix}/__fnos/api/connections`, { headers: { cookie: "trilium-fnos.sid=test-session" } });
+  assert.equal(JSON.parse(info.body).directPort, publicPort);
+  assert.equal((await gateway(`${prefix}/__fnos/`)).status, 401);
+});
+
+test("HTML attachments remain unchanged and static assets retain compression", async () => {
+  const attachment = await get(`http://127.0.0.1:${publicPort}/attachment.html`);
+  assert.equal(attachment.body, "<html><head></head><body>Note attachment unchanged</body></html>");
+  const asset = await get(`http://127.0.0.1:${publicPort}/compressed.js`, { headers: { "accept-encoding": "gzip" } });
+  assert.equal(asset.headers["content-encoding"], "gzip");
+  assert.equal(asset.headers["x-seen-encoding"], "gzip");
 });
 
 function postDirect(route, body, headers = {}) {
@@ -206,14 +241,14 @@ function gateway(url, options = {}) {
   return get(`http://nas.example${url}`, { ...options, socketPath });
 }
 
-test("gateway page stays same-origin and injects prefixed update resources", async () => {
+test("gateway page stays same-origin and injects prefixed sync resources", async () => {
   const response = await gateway(`${prefix}/`);
   assert.equal(response.status, 200);
   assert.equal(response.headers["content-security-policy"], "default-src 'self'; frame-ancestors 'self'");
   assert.equal(response.headers["x-frame-options"], undefined);
   assert.equal(response.headers["cache-control"], "no-store");
-  assert.match(response.body, /src="\/app\/trilium-fnos\/__fnos\/assets\/update.js"/);
-  assert.equal((await gateway(`${prefix}/__fnos/assets/update.js`)).status, 200);
+  assert.match(response.body, /src="\/app\/trilium-fnos\/__fnos\/assets\/sync.js"/);
+  assert.equal((await gateway(`${prefix}/__fnos/assets/sync.js`)).status, 200);
 });
 
 test("gateway redirects missing trailing slash while preserving query", async () => {
@@ -227,12 +262,13 @@ test("gateway redirects missing trailing slash while preserving query", async ()
 test("gateway login scopes cookies and redirects without changing direct access", async () => {
   const response = await gateway(`${prefix}/login`);
   assert.equal(response.headers.location, `${prefix}/?login`);
-  assert.equal(response.headers["set-cookie"][0], `trilium.sid=test-session; Path=${prefix}/; HttpOnly; SameSite=Lax`);
+  assert.equal(response.headers["set-cookie"][0], `trilium-fnos.sid=test-session; Path=${prefix}/; HttpOnly; SameSite=Lax`);
   const direct = await get(`http://127.0.0.1:${publicPort}/login`);
   assert.equal(direct.headers.location, "/?login");
   assert.match(direct.headers["set-cookie"][0], /Path=\/;/);
-  assert.equal((await gateway(`${prefix}/__fnos/api/progress`, { headers: { cookie: "trilium.sid=test-session" } })).status, 200);
-  assert.equal((await gateway(`${prefix}/__fnos/api/progress`)).status, 401);
+  assert.equal((await gateway(`${prefix}/__fnos/api/connections`, { headers: { cookie: "trilium.sid=test-session" } })).status, 200);
+  assert.equal((await gateway(`${prefix}/__fnos/api/connections`, { headers: { cookie: "trilium.sid=old-session; trilium-fnos.sid=test-session" } })).status, 200);
+  assert.equal((await gateway(`${prefix}/__fnos/api/connections`)).status, 401);
 });
 
 test("gateway HEAD carries frame policy without fabricating an HTML body", async () => {

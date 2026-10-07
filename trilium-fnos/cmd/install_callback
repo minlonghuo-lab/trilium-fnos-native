@@ -5,7 +5,7 @@ RUNTIME_ROOT="${TRIM_PKGVAR}/runtime"
 CURRENT_LINK="${RUNTIME_ROOT}/current"
 VERSION_FILE="${RUNTIME_ROOT}/current-version"
 
-mkdir -p "${TRIM_PKGVAR}/trilium-data" "${TRIM_PKGVAR}/failed-upgrades" "${RUNTIME_ROOT}/versions" "${RUNTIME_ROOT}/downloads"
+mkdir -p "${TRIM_PKGVAR}/trilium-data" "$RUNTIME_ROOT"
 
 if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then
   BACKUP_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
@@ -15,12 +15,12 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 
-if [ ! -L "$CURRENT_LINK" ]; then
-  ln -s "${TRIM_APPDEST}/server" "${RUNTIME_ROOT}/current.new"
-  mv -f "${RUNTIME_ROOT}/current.new" "$CURRENT_LINK"
+if [ ! -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]; then
+  ln -s "${TRIM_APPDEST}/server" "$CURRENT_LINK"
 fi
 
 if [ ! -s "$VERSION_FILE" ]; then
-  cp "${TRIM_APPDEST}/server/VERSION" "$VERSION_FILE"
+  cp "${CURRENT_LINK}/VERSION" "${VERSION_FILE}.init-$$"
+  mv -f "${VERSION_FILE}.init-$$" "$VERSION_FILE"
 fi
 exit 0

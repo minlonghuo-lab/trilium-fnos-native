@@ -18,7 +18,8 @@ function applyFramePolicy(headers, host, gateway) {
   if (!gateway) {
     // Legacy direct-port access permits the same DNS host on fnOS's port.
     // Never infer trusted parent domains from Referer or client-forwarded headers.
-    const hostname = new URL(`http://${host}`).hostname;
+    let hostname = "";
+    try { hostname = new URL(`http://${host}`).hostname; } catch { /* Invalid hosts never widen frame policy. */ }
     if (/^[a-z0-9.-]+$/i.test(hostname)) {
       ancestors += ` http://${hostname}:* https://${hostname}:*`;
     }
@@ -36,7 +37,14 @@ function applyFramePolicy(headers, host, gateway) {
   delete headers["x-frame-options"];
 }
 
-function gatewayResponseHeaders(headers) {
+function gatewayRequestCookies(req) {
+  const parts = String(req.headers.cookie || "").split(";").map(part => part.trim());
+  const session = parts.find(part => part.startsWith("trilium-fnos.sid="));
+  if (session) req.headers.cookie = parts.filter(part => !/^trilium(?:-fnos)?\.sid=/.test(part))
+    .concat(session.replace(/^trilium-fnos\.sid=/, "trilium.sid=")).join("; ");
+}
+
+function gatewayResponseHeaders(headers, secure = false) {
   // Trilium uses relative asset/API URLs. Only absolute-root redirects and
   // cookies need translation; never rewrite user note bodies or attachments.
   const location = headers.location;
@@ -47,7 +55,7 @@ function gatewayResponseHeaders(headers) {
   if (headers["set-cookie"]) {
     const cookies = Array.isArray(headers["set-cookie"]) ? headers["set-cookie"] : [headers["set-cookie"]];
     headers["set-cookie"] = cookies.map((cookie) => {
-      const parts = cookie.split(";");
+      const parts = cookie.replace(/^trilium\.sid=/, "trilium-fnos.sid=").split(";");
       let hasPath = false;
       const result = parts.filter((part) => !/^\s*domain=/i.test(part)).map((part) => {
         if (!/^\s*path=/i.test(part)) return part;
@@ -57,6 +65,13 @@ function gatewayResponseHeaders(headers) {
         return ` Path=${GATEWAY_PREFIX}${oldPath.startsWith("/") ? oldPath : "/"}`;
       });
       if (!hasPath) result.push(` Path=${GATEWAY_PREFIX}/`);
+      if (secure && /^trilium-fnos\.sid=/.test(result[0])) {
+        for (let index = result.length - 1; index > 0; index--) {
+          if (/^\s*samesite=/i.test(result[index])) result.splice(index, 1);
+        }
+        result.push(" SameSite=None");
+        if (!result.some(part => /^\s*secure\s*$/i.test(part))) result.push(" Secure");
+      }
       return result.join(";");
     });
   }
@@ -73,8 +88,7 @@ function upstreamHeaders(req, gateway) {
   headers["x-forwarded-for"] = req.socket.remoteAddress || "127.0.0.1";
   delete headers.forwarded;
   for (const name of Object.keys(headers)) if (name.startsWith("x-trim-")) delete headers[name];
-  headers["accept-encoding"] = "identity";
   return headers;
 }
 
-module.exports = { GATEWAY_PREFIX, gatewayRoute, applyFramePolicy, gatewayResponseHeaders, upstreamHeaders };
+module.exports = { GATEWAY_PREFIX, gatewayRoute, applyFramePolicy, gatewayResponseHeaders, gatewayRequestCookies, upstreamHeaders };

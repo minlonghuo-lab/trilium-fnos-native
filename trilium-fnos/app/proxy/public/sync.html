@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>电脑端同步 · Trilium Notes</title>
+  <link rel="icon" href="./assets/logo.png">
+  <link rel="stylesheet" href="./assets/sync.css">
+  <script defer src="./assets/sync.js"></script>
+</head>
+<body data-trilium-fnos-sync>
+  <main class="fnos-sync-page">
+    <header><img src="./assets/logo.png" width="32" height="32" alt="Trilium"><h1>电脑端同步</h1></header>
+    <p class="fnos-muted">在电脑端 Trilium Notes 中连接这台 NAS。</p>
+    <section aria-labelledby="server-title">
+      <h2 id="server-title">服务器地址</h2>
+      <div id="fnos-addresses" aria-live="polite" aria-busy="true"><p>正在读取局域网地址…</p></div>
+      <p id="fnos-feedback" class="fnos-muted" role="status"></p>
+      <button id="fnos-retry" type="button" hidden>重新读取地址</button>
+      <p class="fnos-muted">多网卡地址仅为候选，请选择电脑实际可访问的地址。建议为 NAS 固定 IP 或设置 DHCP 地址保留。</p>
+    </section>
+    <section aria-labelledby="setup-title">
+      <h2 id="setup-title">连接方法</h2>
+      <ol>
+        <li>新安装的电脑端 Trilium，选择“从同步服务器同步”，填入上方地址和服务器的 Trilium 密码。</li>
+        <li>已有客户端可在“设置 → 同步”填写服务器地址并测试连接。两端版本应兼容，建议均使用 0.106.0。</li>
+        <li>先备份已有笔记。不同笔记库不能视为可自动无损合并。</li>
+      </ol>
+      <p class="fnos-muted">飞牛网关地址和内部 18888 端口不能用于电脑同步。外网请使用独立 HTTPS 域名反向代理至 NAS 的应用端口，或通过私有 VPN 连接。</p>
+    </section>
+    <footer><a href="../">返回 Trilium Notes</a><span class="fnos-muted">关闭页面不会停止后台同步服务。</span></footer>
+  </main>
+</body>
+</html>

@@ -9,8 +9,16 @@ else
 fi
 
 mkdir -p "$BACKUP_DIR"
+# Stop through the existing package lifecycle; never copy a live SQLite WAL.
+# An old online-update task can refuse stop, in which case abort this upgrade.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+"${SCRIPT_DIR}/main" stop
 if [ -d "$DATA_DIR" ]; then
-  tar -czf "${BACKUP_DIR}/before-fpk-${TRIM_OLD_APPVER:-unknown}-$(date '+%Y%m%d-%H%M%S').tar.gz" -C "$DATA_DIR" .
+  TEMP_BACKUP="$(mktemp "${BACKUP_DIR}/before-fpk-$(date '+%Y%m%d-%H%M%S')-XXXXXX")"
+  trap 'rm -f "$TEMP_BACKUP"' EXIT
+  tar -czf "$TEMP_BACKUP" -C "$DATA_DIR" .
+  tar -tzf "$TEMP_BACKUP" >/dev/null
+  mv "$TEMP_BACKUP" "${TEMP_BACKUP}.tar.gz"
 fi
 
 exit 0

@@ -8,13 +8,19 @@ BUNDLED_VERSION="$(tr -d '[:space:]' < "${TRIM_APPDEST}/server/VERSION")"
 CURRENT_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || true)"
 CURRENT_VERSION="${CURRENT_VERSION#v}"
 
-mkdir -p "${RUNTIME_ROOT}/versions" "${RUNTIME_ROOT}/downloads"
+mkdir -p "$RUNTIME_ROOT"
 
 if [ -z "$CURRENT_VERSION" ] || [ "$(printf '%s\n%s\n' "$CURRENT_VERSION" "$BUNDLED_VERSION" | sort -V | tail -n 1)" = "$BUNDLED_VERSION" ]; then
-  ln -s "${TRIM_APPDEST}/server" "${RUNTIME_ROOT}/current.new"
-  mv -Tf "${RUNTIME_ROOT}/current.new" "$CURRENT_LINK"
-  printf '%s\n' "$BUNDLED_VERSION" > "${VERSION_FILE}.new"
-  mv -f "${VERSION_FILE}.new" "$VERSION_FILE"
+  TEMP_LINK="${RUNTIME_ROOT}/current.new-$$"
+  TEMP_VERSION="${VERSION_FILE}.new-$$"
+  trap 'rm -f "$TEMP_LINK" "$TEMP_VERSION"' EXIT
+  ln -s "${TRIM_APPDEST}/server" "$TEMP_LINK"
+  printf '%s\n' "$BUNDLED_VERSION" > "$TEMP_VERSION"
+  mv -Tf "$TEMP_LINK" "$CURRENT_LINK"
+  mv -f "$TEMP_VERSION" "$VERSION_FILE"
+else
+  echo "当前 Trilium 运行时版本较新，拒绝降级。" >&2
+  exit 1
 fi
 
 exit 0

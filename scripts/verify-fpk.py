@@ -33,6 +33,10 @@ with tarfile.open(args.fpk, "r:gz") as outer:
         check_entry(entry)
     manifest = dict(line.split("=", 1) for line in outer.extractfile("manifest").read().decode().splitlines() if "=" in line)
     manifest = {key.strip(): value.strip() for key, value in manifest.items()}
+    assert manifest["maintainer"] == "TriliumNext"
+    assert manifest["maintainer_url"] == "https://github.com/TriliumNext/Trilium"
+    assert manifest["distributor"] == "Epochwl"
+    assert manifest["distributor_url"] == "https://github.com/minlonghuo-lab/trilium-fnos-native"
     assert digest(outer.extractfile("app.tgz"), "md5") == manifest["checksum"]
     resource = json.load(outer.extractfile("config/resource"))
     privilege = json.load(outer.extractfile("config/privilege"))
@@ -44,6 +48,7 @@ with tarfile.open(args.fpk, "r:gz") as outer:
     assert 'TRILIUM_NETWORK_TRUSTEDREVERSEPROXY="127.0.0.1"' in main
     assert 'TRILIUM_GATEWAY_SOCKET="$GATEWAY_SOCKET"' in main
     assert "__RELEASE_ARCH__" not in main
+    assert "main.mjs" in main and "main.cjs" in main
     packaged = {}
     with tarfile.open(fileobj=outer.extractfile("app.tgz"), mode="r|gz") as payload:
         for entry in payload:
@@ -62,7 +67,9 @@ with tarfile.open(args.fpk, "r:gz") as outer:
             elif entry.name == "proxy/server.js":
                 proxy = stream.read().decode()
                 assert "TRILIUM_BACKEND_PORT || 18888" in proxy and "18080" not in proxy
-                assert "TRILIUM_NETWORK_TRUSTEDREVERSEPROXY: BACKEND_HOST" in proxy
+                assert "createUpdateController" not in proxy
+                assert "performUpdate" not in proxy
+                assert "/__fnos/api/connections" in proxy
 
 official = {}
 removed_link = "node_modules/tesseract.js/node_modules/.bin/opencollective-postinstall"

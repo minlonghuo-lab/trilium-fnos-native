@@ -15,7 +15,6 @@ PUBLIC_PORT="${TRIM_SERVICE_PORT:-8080}"
 BACKEND_PORT="18888"
 GATEWAY_SOCKET="${TRIM_APPDEST}/app.sock"
 LOCK_DIR="${TRIM_PKGTMP:-${TRIM_PKGVAR}}/lifecycle.lock"
-MAINTENANCE_FILE="${RUNTIME_ROOT}/update-maintenance.json"
 
 write_error() {
   [ -n "${TRIM_TEMP_LOGFILE:-}" ] && printf '%s\n' "$1" > "$TRIM_TEMP_LOGFILE"
@@ -54,7 +53,15 @@ pid_running() {
 }
 
 find_our_pids() {
-  local marker="$1" cmdline pid
+  local marker="$1" cmdline pid candidates
+  # Fast candidate lookup; still verify executable and exact argv before signals.
+  if command -v pgrep >/dev/null 2>&1; then
+    candidates="$(pgrep -f 'main[.][cm]js|proxy/server[.]js' 2>/dev/null || true)"
+    for pid in $candidates; do
+      process_matches "$pid" "$marker" && printf '%s\n' "$pid"
+    done
+    return 0
+  fi
   for cmdline in /proc/[0-9]*/cmdline; do
     [ -r "$cmdline" ] || continue
     pid="${cmdline#/proc/}"
@@ -69,7 +76,9 @@ stop_matching() {
   local marker="$1" pids count alive pid
   pids="$(find_our_pids "$marker")"
   [ -n "$pids" ] || return 0
-  kill -TERM $pids 2>/dev/null || true
+  for pid in $pids; do
+    process_matches "$pid" "$marker" && kill -TERM "$pid" 2>/dev/null || true
+  done
   count=0
   while [ "$count" -lt 30 ]; do
     alive=""
@@ -80,7 +89,9 @@ stop_matching() {
     sleep 1
     count=$((count + 1))
   done
-  kill -KILL $alive 2>/dev/null || true
+  for pid in $alive; do
+    process_matches "$pid" "$marker" && kill -KILL "$pid" 2>/dev/null || true
+  done
 }
 
 stop_pid() {
@@ -106,22 +117,17 @@ gateway_ready() {
   [ -S "$GATEWAY_SOCKET" ]
 }
 
-update_active() {
-  local proxy_pid owner
-  proxy_pid="$(read_pid "$PROXY_PID_FILE" 2>/dev/null || true)"
-  owner="$(read_pid "${LOCK_DIR}/owner.pid" 2>/dev/null || true)"
-  [ -n "$proxy_pid" ] && [ "$owner" = "$proxy_pid" ] || return 1
-  process_matches "$proxy_pid" "${PROXY_DIR}/server.js" || return 1
-  "$PROXY_NODE" "${PROXY_DIR}/maintenance.js" "$MAINTENANCE_FILE" "$proxy_pid" >/dev/null 2>&1
-}
-
 wait_ready() {
-  local file="$1" marker="$2" port="$3" limit="$4" count
+  local file="$1" marker="$2" port="$3" limit="$(( $4 * 10 ))" ready_socket="${5:-}" count
   count=0
   while [ "$count" -lt "$limit" ]; do
-    pid_running "$file" "$marker" || return 1
-    port_open "$port" && return 0
-    sleep 1
+    # nohup is asynchronous: /proc/exe may still identify nohup/bash before
+    # execve switches to Node. Do not misclassify that startup window as death.
+    if pid_running "$file" "$marker" && port_open "$port" && { [ -z "$ready_socket" ] || [ -S "$ready_socket" ]; }; then return 0; fi
+    local candidate
+    candidate="$(read_pid "$file" 2>/dev/null || true)"
+    [ -n "$candidate" ] && kill -0 "$candidate" 2>/dev/null || return 1
+    sleep 0.1
     count=$((count + 1))
   done
   return 1
@@ -158,7 +164,14 @@ acquire_lock() {
 backend_marker() {
   local runtime
   runtime="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-  [ -n "$runtime" ] && printf '%s/main.cjs' "$runtime"
+  [ -n "$runtime" ] || return 1
+  if [ -f "${runtime}/main.mjs" ]; then
+    printf '%s/main.mjs' "$runtime"
+  elif [ -f "${runtime}/main.cjs" ]; then
+    printf '%s/main.cjs' "$runtime"
+  else
+    return 1
+  fi
 }
 
 start_backend() {
@@ -184,7 +197,7 @@ start_backend() {
 
   [ -L "$CURRENT_LINK" ] || { write_error "Trilium 运行时指针不存在，请重新安装应用。"; return 1; }
   RUNTIME_DIR="$(readlink -f "$CURRENT_LINK")"
-  [ -x "${RUNTIME_DIR}/node/bin/node" ] && [ -f "${RUNTIME_DIR}/main.cjs" ] || {
+  [ -x "${RUNTIME_DIR}/node/bin/node" ] && [ -n "$marker" ] && [ -f "$marker" ] || {
     write_error "Trilium 原生运行时不完整：${RUNTIME_DIR}"
     return 1
   }
@@ -197,47 +210,37 @@ start_backend() {
   TRILIUM_NETWORK_HOST="127.0.0.1" \
   TRILIUM_NETWORK_PORT="$BACKEND_PORT" \
   TRILIUM_NETWORK_TRUSTEDREVERSEPROXY="127.0.0.1" \
-  nohup "${RUNTIME_DIR}/node/bin/node" "${RUNTIME_DIR}/main.cjs" >> "$BACKEND_LOG_FILE" 2>&1 &
+  nohup "${RUNTIME_DIR}/node/bin/node" "$marker" >> "$BACKEND_LOG_FILE" 2>&1 &
   printf '%s\n' "$!" > "$BACKEND_PID_FILE"
 
   # The database can take a while to open or migrate.  fnOS only needs the
   # public proxy to be listening before it considers the app enabled; the
   # proxy shows a retry page while this native backend becomes healthy.
-  local count=0
-  while [ "$count" -lt 10 ]; do
-    pid_running "$BACKEND_PID_FILE" "${RUNTIME_DIR}/main.cjs" && return 0
-    sleep 1
+  count=0
+  while [ "$count" -lt 100 ]; do
+    pid_running "$BACKEND_PID_FILE" "$marker" && return 0
+    sleep 0.1
     count=$((count + 1))
   done
-  stop_pid "$BACKEND_PID_FILE" "${RUNTIME_DIR}/main.cjs"
+  stop_pid "$BACKEND_PID_FILE" "$marker"
   write_error "Trilium 后端进程未能保持运行，请查看 ${BACKEND_LOG_FILE}"
   return 1
 }
 
 start_proxy() {
-  local BACKUP_DIR
   pid_running "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" && port_open "$PUBLIC_PORT" && gateway_ready && return 0
   rm -f "$PROXY_PID_FILE"
   stop_matching "${PROXY_DIR}/server.js"
   port_open "$PUBLIC_PORT" && { write_error "入口端口 ${PUBLIC_PORT} 已被其他进程占用。"; return 1; }
   [ -x "$PROXY_NODE" ] || { write_error "Trilium 内置 Node.js 运行时缺失。"; return 1; }
 
-  if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then BACKUP_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"; else BACKUP_DIR="${TRIM_PKGVAR}/update-backups"; fi
-  mkdir -p "$BACKUP_DIR" "${TRIM_PKGVAR}/failed-upgrades" "${RUNTIME_ROOT}/versions" "${RUNTIME_ROOT}/downloads"
   cd "$PROXY_DIR" || return 1
   TRILIUM_PUBLIC_PORT="$PUBLIC_PORT" TRILIUM_BACKEND_PORT="$BACKEND_PORT" \
   TRILIUM_GATEWAY_SOCKET="$GATEWAY_SOCKET" \
-  TRILIUM_LIFECYCLE_LOCK="$LOCK_DIR" \
-  TRILIUM_DATA_DIR="${TRIM_PKGVAR}/trilium-data" TRILIUM_BACKUP_DIR="$BACKUP_DIR" \
-  TRILIUM_FAILED_DIR="${TRIM_PKGVAR}/failed-upgrades" TRILIUM_RUNTIME_ROOT="$RUNTIME_ROOT" \
-  TRILIUM_CURRENT_LINK="$CURRENT_LINK" TRILIUM_VERSION_FILE="$VERSION_FILE" \
-  TRILIUM_RELEASE_ARCH="${TRILIUM_RELEASE_ARCH:-__RELEASE_ARCH__}" \
-  TRILIUM_BACKEND_PID_FILE="$BACKEND_PID_FILE" TRILIUM_BACKEND_LOG_FILE="$BACKEND_LOG_FILE" \
-  TRILIUM_LOG_FILE="${TRIM_PKGVAR}/update.log" \
   nohup "$PROXY_NODE" "${PROXY_DIR}/server.js" >> "$PROXY_LOG_FILE" 2>&1 &
   printf '%s\n' "$!" > "$PROXY_PID_FILE"
 
-  if ! wait_ready "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" "$PUBLIC_PORT" 30 || ! gateway_ready; then
+  if ! wait_ready "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" "$PUBLIC_PORT" 30 "$GATEWAY_SOCKET"; then
     stop_pid "$PROXY_PID_FILE" "${PROXY_DIR}/server.js"
     write_error "Trilium 桌面入口未能启动，请查看 ${PROXY_LOG_FILE}"
     return 1
@@ -246,12 +249,8 @@ start_proxy() {
 
 start_app() {
   local marker
-  if update_active; then
-    port_open "$PUBLIC_PORT" && gateway_ready && return 0
-    write_error "Trilium 正在更新，入口异常；请查看更新日志，暂不启动第二个后端。"
-    return 1
-  fi
   acquire_lock || { write_error "另一个 Trilium 启停操作仍在进行，请稍后重试。"; return 1; }
+  ensure_runtime || return 1
   # Bring up the fnOS-facing listener first.  Trilium's native server may
   # spend minutes migrating its database; keeping the proxy alive prevents
   # fnOS from marking the app as disabled during that normal startup window.
@@ -263,9 +262,22 @@ start_app() {
   }
 }
 
+ensure_runtime() {
+  mkdir -p "${TRIM_PKGVAR}/trilium-data" "$RUNTIME_ROOT" || return 1
+  if [ ! -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]; then
+    [ -x "${TRIM_APPDEST}/server/node/bin/node" ] && { [ -f "${TRIM_APPDEST}/server/main.mjs" ] || [ -f "${TRIM_APPDEST}/server/main.cjs" ]; } || {
+      write_error "内置 Trilium 运行时不完整。"; return 1;
+    }
+    ln -s "${TRIM_APPDEST}/server" "$CURRENT_LINK" || return 1
+  fi
+  if [ ! -s "$VERSION_FILE" ]; then
+    [ -s "${CURRENT_LINK}/VERSION" ] || { write_error "当前运行时版本文件缺失。"; return 1; }
+    cp "${CURRENT_LINK}/VERSION" "${VERSION_FILE}.init-$$" && mv -f "${VERSION_FILE}.init-$$" "$VERSION_FILE" || return 1
+  fi
+}
+
 stop_app() {
   local marker
-  update_active && { write_error "Trilium 正在备份或更新，请等待更新完成后再停止应用。"; return 1; }
   acquire_lock || { write_error "另一个 Trilium 启停操作仍在进行，请稍后重试。"; return 1; }
   stop_pid "$PROXY_PID_FILE" "${PROXY_DIR}/server.js"
   stop_matching "${PROXY_DIR}/server.js"
@@ -284,9 +296,6 @@ case "${1:-}" in
   status)
     marker="$(backend_marker)"
     if pid_running "$PROXY_PID_FILE" "${PROXY_DIR}/server.js" && port_open "$PUBLIC_PORT" && gateway_ready; then
-      # Cold backup/migration deliberately restarts the backend. Only a live,
-      # verified proxy owning a bounded maintenance task may bridge that gap.
-      update_active && exit 0
       [ -n "$marker" ] && pid_running "$BACKEND_PID_FILE" "$marker" && exit 0
     fi
     exit 3
