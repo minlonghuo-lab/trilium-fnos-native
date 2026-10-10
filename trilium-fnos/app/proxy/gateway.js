@@ -83,6 +83,16 @@ function upstreamHeaders(req, gateway) {
   for (const name of String(headers.connection || "").split(",")) delete headers[name.trim().toLowerCase()];
   for (const name of ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "te", "trailer", "upgrade"]) delete headers[name];
   const forwardedProto = req.headers["x-forwarded-proto"];
+  if (gateway) {
+    // Do not let the mobile WebView negotiate a coding that fnOS's transport
+    // cannot relay. Direct-port browser/sync requests retain their negotiation.
+    headers["accept-encoding"] = "identity";
+    if (["GET", "HEAD"].includes(req.method)) {
+      delete headers["if-none-match"];
+      delete headers["if-modified-since"];
+    }
+    // Range + If-Range remain together: downloads must not mix file versions.
+  }
   headers["x-forwarded-proto"] = gateway && ["http", "https"].includes(forwardedProto) ? forwardedProto : "http";
   headers["x-forwarded-host"] = req.headers.host || "localhost";
   headers["x-forwarded-for"] = req.socket.remoteAddress || "127.0.0.1";

@@ -1,5 +1,5 @@
 appname=trilium-fnos
-version=0.106.0-r1
+version=0.106.0-r7
 display_name=Trilium Notes
 desc=不依赖 Docker 的原生 Trilium Notes，内置官方运行时，支持电脑端同步和手动 FPK 升级。
 source=thirdparty
@@ -15,4 +15,4 @@ service_port=8080
 checkport=true
 ctl_stop=true
 disable_authorization_path=true
-changelog=0.106.0-r1：升级官方 Trilium 0.106.0；移除在线更新，保留电脑端同步；适配原生主题；优化启动与异常处理。
+changelog=0.106.0-r7：完整静态资源树使用版本化新目录，修正生命周期路径识别；保留官方 0.106.0 本体、笔记和电脑端同步；待手机 FNID 实机验收。

@@ -56,3 +56,21 @@ test("install callback is idempotent and preserves an existing runtime and data"
   assert.equal(fs.readFileSync(path.join(runtime, "current-version"), "utf8"), "0.106.0");
   assert.equal(fs.readFileSync(path.join(f.data, "document.txt"), "utf8"), "keep");
 });
+
+test("reinstall on the original volume reuses retained database, WAL and runtime without overwriting them", t => {
+  const f = fixture(t);
+  const runtime = path.join(f.env.TRIM_PKGVAR, "runtime");
+  const server = path.join(f.env.TRIM_APPDEST, "server");
+  fs.mkdirSync(runtime);
+  // Uninstallation removed the target, but retained the data and link.
+  fs.symlinkSync(server, path.join(runtime, "current"));
+  fs.writeFileSync(path.join(runtime, "current-version"), "0.106.0\n");
+  const retained = { "document.db": Buffer.from([0, 1, 2, 255]), "document.db-wal": Buffer.from([7, 8, 9]), "config.ini": Buffer.from("retained-config") };
+  for (const [name, body] of Object.entries(retained)) fs.writeFileSync(path.join(f.data, name), body);
+  fs.mkdirSync(server, { recursive: true });
+  fs.writeFileSync(path.join(server, "VERSION"), "0.106.0\n");
+  const result = spawnSync("bash", [path.join(cmd, "install_callback")], { env: f.env, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.realpathSync(path.join(runtime, "current")), fs.realpathSync(server));
+  for (const [name, body] of Object.entries(retained)) assert.deepEqual(fs.readFileSync(path.join(f.data, name)), body);
+});

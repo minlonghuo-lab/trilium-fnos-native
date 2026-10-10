@@ -159,6 +159,16 @@ test("injects sync assets into Trilium HTML", async () => {
   assert.equal(response.status, 200);
   assert.match(response.body, /data-trilium-fnos-manager/);
   assert.match(response.body, /\/__fnos\/assets\/sync\.js/);
+  assert.match(response.body, /<head><script src="\/__fnos\/assets\/startup.js"/);
+});
+
+test("startup recovery is available on the authenticated gateway before module loading", async () => {
+  const response = await gateway(`${prefix}/__fnos/assets/startup.js`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers["content-type"], /application\/javascript/);
+  assert.match(response.body, /vite:preloadError/);
+  const document = await gateway(`${prefix}/`);
+  assert.match(document.body, /<head><script src="\/app\/trilium-fnos\/__fnos\/assets\/startup.js"/);
 });
 
 test("serves bundled sync assets", async () => {
@@ -246,7 +256,7 @@ test("gateway page stays same-origin and injects prefixed sync resources", async
   assert.equal(response.status, 200);
   assert.equal(response.headers["content-security-policy"], "default-src 'self'; frame-ancestors 'self'");
   assert.equal(response.headers["x-frame-options"], undefined);
-  assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(response.headers["cache-control"], "no-store, no-transform");
   assert.match(response.body, /src="\/app\/trilium-fnos\/__fnos\/assets\/sync.js"/);
   assert.equal((await gateway(`${prefix}/__fnos/assets/sync.js`)).status, 200);
 });

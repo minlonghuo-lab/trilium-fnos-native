@@ -8,8 +8,29 @@ CACHE_DIR="${ROOT_DIR}/.cache/upstream"
 DIST_DIR="${ROOT_DIR}/dist"
 FNPACK_VERSION="1.2.3"
 UPSTREAM_VERSION="${UPSTREAM_VERSION:-v0.106.0}"
-PACKAGE_VERSION="${PACKAGE_VERSION:-${UPSTREAM_VERSION#v}-r1}"
+DEFAULT_PACKAGE_VERSION="${UPSTREAM_VERSION#v}-r1"
+if [ "$UPSTREAM_VERSION" = "v0.106.0" ]; then DEFAULT_PACKAGE_VERSION="0.106.0-r7"; fi
+PACKAGE_VERSION="${PACKAGE_VERSION:-$DEFAULT_PACKAGE_VERSION}"
 PACKAGE_VERSION="${PACKAGE_VERSION#v}"
+PACKAGE_DIAGNOSTICS="${PACKAGE_DIAGNOSTICS:-0}"
+case "$PACKAGE_DIAGNOSTICS" in 0|1) ;; *) echo "PACKAGE_DIAGNOSTICS must be 0 or 1" >&2; exit 2 ;; esac
+PACKAGE_ENTRY_TYPE="${PACKAGE_ENTRY_TYPE:-url}"
+case "$PACKAGE_ENTRY_TYPE" in url|iframe) ;; *) echo "PACKAGE_ENTRY_TYPE must be url or iframe" >&2; exit 2 ;; esac
+DEFAULT_ASSET_NAMESPACE=0
+if [ "$UPSTREAM_VERSION" = "v0.106.0" ] && [ "$PACKAGE_VERSION" = "0.106.0-r7" ]; then DEFAULT_ASSET_NAMESPACE=1; fi
+PACKAGE_ASSET_NAMESPACE="${PACKAGE_ASSET_NAMESPACE:-$DEFAULT_ASSET_NAMESPACE}"
+case "$PACKAGE_ASSET_NAMESPACE" in 0|1) ;; *) echo "PACKAGE_ASSET_NAMESPACE must be 0 or 1" >&2; exit 2 ;; esac
+if [ "$PACKAGE_ASSET_NAMESPACE" = "1" ] && [ "$UPSTREAM_VERSION" != "v0.106.0" ]; then
+  echo "The static namespace is verified only for Trilium v0.106.0." >&2; exit 2
+fi
+DEFAULT_IOS_ENTRY=parser
+if [ "$PACKAGE_ASSET_NAMESPACE" = "1" ]; then DEFAULT_IOS_ENTRY=deferred; fi
+PACKAGE_IOS_ENTRY="${PACKAGE_IOS_ENTRY:-$DEFAULT_IOS_ENTRY}"
+case "$PACKAGE_IOS_ENTRY" in parser|deferred) ;; *) echo "PACKAGE_IOS_ENTRY must be parser or deferred" >&2; exit 2 ;; esac
+if [ "$PACKAGE_ENTRY_TYPE" = "iframe" ] && [ "$PACKAGE_DIAGNOSTICS" != "1" ]; then
+  echo "The iframe entry is a diagnostic comparison; set PACKAGE_DIAGNOSTICS=1." >&2
+  exit 2
+fi
 OUTPUT_VERSION="v${PACKAGE_VERSION}"
 
 case "$(uname -s)-$(uname -m)" in
@@ -46,10 +67,19 @@ fi
 
 SKIP_INTEGRATION=0 "${ROOT_DIR}/scripts/validate.sh" "${ROOT_DIR}/trilium-fnos"
 
-RELEASE_JSON="$(curl --fail --location --retry 3 \
+if ! RELEASE_JSON="$(curl --fail --location --retry 3 --connect-timeout 15 --max-time 60 \
   -H 'Accept: application/vnd.github+json' \
   -H 'User-Agent: trilium-fnos-builder/1.0' \
-  "https://api.github.com/repos/TriliumNext/Trilium/releases/tags/${UPSTREAM_VERSION}")"
+  "https://api.github.com/repos/TriliumNext/Trilium/releases/tags/${UPSTREAM_VERSION}")"; then
+  # Public API limits should not block an already authenticated build host.
+  # gh keeps credentials out of command arguments and build logs.
+  if command -v gh >/dev/null 2>&1; then
+    RELEASE_JSON="$(gh api "repos/TriliumNext/Trilium/releases/tags/${UPSTREAM_VERSION}")"
+  else
+    echo "Cannot read upstream release metadata; retry later or authenticate GitHub CLI." >&2
+    exit 1
+  fi
+fi
 
 build_one() {
   local fnos_platform="$1"
@@ -109,12 +139,13 @@ print(h.hexdigest())
   fi
   printf '%s\n' "${UPSTREAM_VERSION#v}" > "${build_dir}/trilium-fnos/app/server/VERSION"
 
-  python3 - "${build_dir}/trilium-fnos" "$fnos_platform" "$release_arch" "$PACKAGE_VERSION" <<'PY'
+  python3 - "${build_dir}/trilium-fnos" "$fnos_platform" "$release_arch" "$PACKAGE_VERSION" "$PACKAGE_DIAGNOSTICS" "$PACKAGE_ENTRY_TYPE" "$PACKAGE_IOS_ENTRY" "$PACKAGE_ASSET_NAMESPACE" <<'PY'
 from pathlib import Path
+import json
 import sys
 
 package_dir = Path(sys.argv[1])
-platform, release_arch, version = sys.argv[2:]
+platform, release_arch, version, diagnostic, entry_type, ios_entry, asset_namespace = sys.argv[2:]
 manifest = package_dir.joinpath("manifest").read_text()
 lines = []
 for line in manifest.splitlines():
@@ -122,8 +153,46 @@ for line in manifest.splitlines():
         line = f"platform={platform}"
     elif line.startswith("version="):
         line = f"version={version}"
+    elif asset_namespace == "1" and line.startswith("desc="):
+        line = "desc=原生 Trilium Notes 0.106.0；修复手机网关静态资源缓存与启停识别，保留原笔记及电脑同步，待 FNID 实机验收。"
+    elif asset_namespace == "1" and line.startswith("changelog="):
+        line = f"changelog={version}：完整静态资源树切换至版本化新目录；修复生命周期别名识别，保留笔记、登录与同步协议；无 Docker、无在线更新器。"
+    elif ios_entry == "deferred" and line.startswith("desc="):
+        line = "desc=iPhone 飞牛 App 模块启动兼容候选包；原生 Trilium 0.106.0，真实入口延后启动，待 FN Connect 实机验证。"
+    elif ios_entry == "deferred" and line.startswith("changelog="):
+        line = f"changelog={version}：恢复新页面入口；iPhone App 网关移除初始模块预加载并单次延后启动官方入口，补齐早期诊断，不修改笔记或同步协议。"
+    elif diagnostic == "1" and entry_type == "iframe" and line.startswith("desc="):
+        line = "desc=FNID 旧入口对照诊断包；保留 Trilium 0.106.0，恢复飞牛内嵌窗口打开方式，待手机验证。"
+    elif diagnostic == "1" and entry_type == "iframe" and line.startswith("changelog="):
+        line = f"changelog={version}：在 r4 诊断包基础上仅将入口 url 改为 iframe；本体与代理不变，验证旧版手机 FNID 入口兼容性。"
+    elif diagnostic == "1" and line.startswith("desc="):
+        line = "desc=一次性手机远程加载诊断包，非修复版；原生 Trilium 0.106.0，自动记录安全启动事件，不修改笔记数据。"
+    elif diagnostic == "1" and line.startswith("changelog="):
+        line = f"changelog={version}：一次性 FN Connect 客户端诊断；约20秒自动采集，不清缓存、不改nginx、不恢复更新器。"
     lines.append(line)
 package_dir.joinpath("manifest").write_text("\n".join(lines) + "\n")
+entry_file = package_dir.joinpath("app/ui/config")
+entry_config = json.loads(entry_file.read_text())
+entry_config[".url"]["trilium-fnos.main"]["type"] = entry_type
+entry_file.write_text(json.dumps(entry_config, ensure_ascii=False, indent=2) + "\n")
+marker = package_dir.joinpath("app/proxy/diagnostic-mode.json")
+if diagnostic == "1":
+    marker.write_text('{"enabled":true}\n')
+elif marker.exists():
+    marker.unlink()
+entry_marker = package_dir.joinpath("app/proxy/ios-entry-mode.json")
+if ios_entry == "deferred":
+    entry_marker.write_text('{"mode":"deferred"}\n')
+elif entry_marker.exists():
+    entry_marker.unlink()
+namespace_marker = package_dir.joinpath("app/proxy/asset-namespace-mode.json")
+if asset_namespace == "1":
+    namespace_marker.write_text('{"enabled":true}\n')
+elif namespace_marker.exists():
+    namespace_marker.unlink()
+audit_marker = package_dir.joinpath("app/proxy/module-audit-mode.json")
+if audit_marker.exists():
+    audit_marker.unlink()
 for script in package_dir.joinpath("cmd").iterdir():
     if script.is_file():
         text = script.read_text()
@@ -174,7 +243,7 @@ PY
 
   cp "$fpk_path" "${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk"
   python3 "${ROOT_DIR}/scripts/verify-fpk.py" \
-    "${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk" --upstream "$archive_path"
+    "${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk" --upstream "$archive_path" --entry-type "$PACKAGE_ENTRY_TYPE" --ios-entry "$PACKAGE_IOS_ENTRY" --asset-namespace "$PACKAGE_ASSET_NAMESPACE" --diagnostics "$PACKAGE_DIAGNOSTICS"
   rm -rf "$build_dir"
   echo "Built ${DIST_DIR}/trilium-fnos-${OUTPUT_VERSION}-${output_arch}.fpk"
 }

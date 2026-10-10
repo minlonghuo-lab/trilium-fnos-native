@@ -53,6 +53,10 @@ body[data-trilium-fnos-sync] {
 .fnos-sync-page a { color: inherit; text-underline-offset: 3px; }
 .fnos-sync-page footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
 .fnos-sync-page [hidden] { display: none; }
+/* Temporary diagnostic page reuses the approved layout, without overlays. */
+body[data-module-audit] .fnos-sync-page input[type="radio"] { flex: 0 0 20px; width: 20px; min-height: 20px; margin-inline-end: 8px; }
+body[data-module-audit] .fnos-sync-page label { display: flex; align-items: center; min-height: 44px; }
+body[data-module-audit] #audit-id { overflow-wrap: anywhere; }
 /* Upstream download hints are not actionable for a manually packaged fnOS app. */
 .global-menu .global-menu-button-update-available,
 .global-menu .dropdown-menu > li:has(.bx-download):not([data-trilium-fnos-sync-menu]),
@@ -63,3 +67,8 @@ body[data-trilium-fnos-sync] {
   .fnos-sync-page .fnos-address-row { flex-wrap: wrap; }
   .fnos-sync-page input { flex-basis: 100%; }
 }
+/* Startup recovery stays inside the upstream splash and vanishes with it. */
+#fnos-startup-recovery { max-width: min(440px, 85vw); text-align: center; font: 14px/1.6 system-ui, sans-serif; }
+#fnos-startup-recovery p { margin: 12px 0; }
+#fnos-startup-recovery button { border: 1px solid #72b755; border-radius: 6px; padding: 8px 18px; background: #72b755; color: #16280e; font: inherit; cursor: pointer; }
+#fnos-startup-recovery button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

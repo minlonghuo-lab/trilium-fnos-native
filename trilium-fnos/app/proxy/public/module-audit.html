@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>资源诊断 · Trilium Notes</title>
+  <link rel="icon" href="__PREFIX__/__fnos/assets/logo.png">
+  <link rel="stylesheet" href="__PREFIX__/__fnos/assets/sync.css">
+  <script defer src="__PREFIX__/__fnos/module-audit/__ATTEMPT__/client.js"></script>
+</head>
+<body data-trilium-fnos-sync data-module-audit="__ATTEMPT__">
+  <main class="fnos-sync-page">
+    <header><img src="__PREFIX__/__fnos/assets/logo.png" width="32" height="32" alt="Trilium"><h1>资源诊断</h1></header>
+    <p class="fnos-muted">只检测公开资源，不读取笔记或密码，不修改应用设置。</p>
+    <section>
+      <h2>当前连接</h2>
+      <p>请按飞牛 App 当前实际选择的 NAS 入口填写；开启 VPN 不等于使用内网入口。</p>
+      <p><label><input type="radio" name="connection" value="fnid" checked> FN Connect / FNID</label></p>
+      <p><label><input type="radio" name="connection" value="lan"> 局域网地址</label></p>
+      <p><label><input type="radio" name="connection" value="vpn"> VPN 内网地址</label></p>
+      <button id="audit-start" type="button">开始测试</button>
+      <p id="audit-status" role="status">请保持此页面在前台。测试期间不会启动第二个 Trilium。</p>
+    </section>
+    <section>
+      <h2>测试结果</h2>
+      <ol id="audit-results" aria-live="polite"><li>等待开始</li></ol>
+      <p class="fnos-muted">执行成功只代表该项测试通过，不代表 Trilium 已修复。结果会发送到这台 NAS 的诊断日志。</p>
+      <p class="fnos-muted">诊断编号：<span id="audit-id">__ATTEMPT__</span></p>
+      <noscript>诊断脚本未执行。请截图并提供测试时间。</noscript>
+    </section>
+    <footer><a href="__PREFIX__/">返回 Trilium Notes</a></footer>
+  </main>
+</body>
+</html>

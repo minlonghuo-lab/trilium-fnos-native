@@ -10,6 +10,69 @@ const source = fs.readFileSync(path.join(__dirname, "../trilium-fnos/cmd/main"),
 const split = source.lastIndexOf('case "${1:-}" in');
 const definitions = source.slice(0, split);
 const dispatch = source.slice(split);
+test("entry script identity accepts symlink aliases in both directions, not other scripts", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trilium-identity-"));
+  try {
+    fs.mkdirSync(path.join(dir, "real"));
+    fs.writeFileSync(path.join(dir, "real/server.js"), "// proxy");
+    fs.writeFileSync(path.join(dir, "real/other.js"), "// unrelated");
+    fs.symlinkSync(path.join(dir, "real"), path.join(dir, "alias"));
+    const real = path.join(dir, "real/server.js");
+    const alias = path.join(dir, "alias/server.js");
+    const other = path.join(dir, "real/other.js");
+    const result = run(`
+script_paths_match '${real}' '${alias}' || exit 1
+script_paths_match '${alias}' '${real}' || exit 2
+script_paths_match '${real}' '${real}' || exit 3
+script_paths_match '${other}' '${alias}' && exit 4
+script_paths_match 'server.js' '${alias}' && exit 5
+script_paths_match '${dir}/missing.js' '${alias}' && exit 6
+exit 0
+`);
+    assert.equal(result.status, 0, result.stderr);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("process identity verifies bundled executable and only the Node entry argument", () => {
+  assert.match(definitions, /\[ "\$executable" = "\$expected" \]/);
+  assert.match(definitions, /read -r -d '' argv0 && IFS= read -r -d '' script/);
+  assert.match(definitions, /script_paths_match "\$script" "\$marker"/);
+  assert.doesNotMatch(definitions, /grep -Fxq -- "\$marker"/);
+});
+
+test("process matcher accepts an aliased entry, rejects marker in a later argument and wrong executable", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trilium-proc-"));
+  try {
+    const procDir = path.join(dir, String(process.pid));
+    fs.mkdirSync(procDir);
+    fs.mkdirSync(path.join(dir, "proxy"));
+    const marker = path.join(dir, "proxy/server.js");
+    const alias = path.join(dir, "alias/server.js");
+    fs.writeFileSync(marker, "// proxy");
+    fs.symlinkSync(path.join(dir, "proxy"), path.join(dir, "alias"));
+    fs.symlinkSync(process.execPath, path.join(procDir, "exe"));
+    const fakeDefinitions = definitions.replaceAll('/proc/${pid}', `${dir}/\${pid}`);
+    const check = () => run(`PROXY_DIR='${dir}/proxy'\nPROXY_NODE='${process.execPath}'\nprocess_matches ${process.pid} '${marker}'`, "status", fakeDefinitions);
+    fs.writeFileSync(path.join(procDir, "cmdline"), `${process.execPath}\0${alias}\0`);
+    assert.equal(check().status, 0);
+    fs.writeFileSync(path.join(procDir, "cmdline"), `${process.execPath}\0/unrelated/script.js\0${marker}\0`);
+    assert.equal(check().status, 1);
+    fs.writeFileSync(path.join(procDir, "cmdline"), `${process.execPath}\0${alias}\0`);
+    fs.unlinkSync(path.join(procDir, "exe"));
+    fs.symlinkSync("/bin/sh", path.join(procDir, "exe"));
+    assert.equal(check().status, 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("packaged lifecycle uses the fnOS package identity for both native services", () => {
+  const privilege = JSON.parse(fs.readFileSync(path.join(__dirname, "../trilium-fnos/config/privilege"), "utf8"));
+  assert.equal(privilege.defaults["run-as"], "package");
+  assert.equal(privilege.username, "trilium_fnos");
+  assert.equal(privilege.groupname, "trilium_fnos");
+  assert.doesNotMatch(definitions, /(?:sudo|runuser|su)\s/);
+  assert.match(definitions, /nohup "\$PROXY_NODE"/);
+  assert.match(definitions, /nohup "\$\{RUNTIME_DIR\}\/node\/bin\/node"/);
+});
 test("runtime entrypoint supports official 0.106 ESM and legacy CommonJS without rewriting either", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trilium-entry-"));
   try {
@@ -42,9 +105,9 @@ exit 0
 `);
   assert.equal(result.status, 0, result.stderr);
 });
-function run(code, action = "status") {
+function run(code, action = "status", shellDefinitions = definitions) {
   return spawnSync("bash", ["-s", "--", action], {
-    input: definitions + "\n" + code,
+    input: shellDefinitions + "\n" + code,
     encoding: "utf8",
     env: { ...process.env, TRIM_APPDEST: "/test/app", TRIM_PKGVAR: "/test/var" }
   });
